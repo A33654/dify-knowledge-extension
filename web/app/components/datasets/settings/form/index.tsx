@@ -1,0 +1,145 @@
+'use client'
+import type { DatasetDetailWithPartialMembersResponse } from '@dify/contracts/api/console/datasets/types.gen'
+import { Button } from '@langgenius/dify-ui/button'
+import { Separator } from '@langgenius/dify-ui/separator'
+import { useTranslation } from 'react-i18next'
+import { useDatasetDetailContextWithSelector } from '@/context/dataset-detail'
+import BasicInfoSection from './components/basic-info-section'
+import ExternalKnowledgeSection from './components/external-knowledge-section'
+import IndexingSection from './components/indexing-section'
+import { useFormState } from './hooks/use-form-state'
+
+const DatasetSettingsForm = ({
+  currentDataset,
+}: {
+  currentDataset: DatasetDetailWithPartialMembersResponse
+}) => {
+  const { t } = useTranslation(['datasetSettings'])
+  const {
+    canEditSettings,
+
+    // Loading state
+    loading,
+
+    // Basic form
+    name,
+    setName,
+    description,
+    setDescription,
+
+    // Icon
+    iconInfo,
+    handleSelectAppIcon,
+
+    // Permission
+    permission,
+    setPermission,
+    selectedMemberIDs,
+    setSelectedMemberIDs,
+    memberList,
+
+    // External retrieval
+    topK,
+    scoreThreshold,
+    scoreThresholdEnabled,
+    handleSettingsChange,
+
+    // Indexing and retrieval
+    indexMethod,
+    setIndexMethod,
+    keywordNumber,
+    setKeywordNumber,
+    retrievalConfig,
+    setRetrievalConfig,
+    embeddingModel,
+    setEmbeddingModel,
+    embeddingModelList,
+
+    // Summary index
+    summaryIndexSetting,
+    handleSummaryIndexSettingChange,
+
+    // Computed
+    showMultiModalTip,
+
+    // Actions
+    handleSave,
+  } = useFormState(currentDataset)
+
+  const isExternalProvider = currentDataset?.provider === 'external'
+  const readonly = !canEditSettings
+
+  return (
+    <div className="flex w-full max-w-240 flex-col gap-y-4 px-4 py-8 @3xl/settings:px-20">
+      <BasicInfoSection
+        currentDataset={currentDataset}
+        name={name}
+        setName={setName}
+        description={description}
+        setDescription={setDescription}
+        iconInfo={iconInfo}
+        handleSelectAppIcon={handleSelectAppIcon}
+        permission={permission}
+        setPermission={setPermission}
+        selectedMemberIDs={selectedMemberIDs}
+        setSelectedMemberIDs={setSelectedMemberIDs}
+        memberList={memberList}
+        readonly={readonly}
+      />
+
+      {isExternalProvider ? (
+        <ExternalKnowledgeSection
+          currentDataset={currentDataset}
+          topK={topK}
+          scoreThreshold={scoreThreshold}
+          scoreThresholdEnabled={scoreThresholdEnabled}
+          handleSettingsChange={handleSettingsChange}
+          readonly={readonly}
+        />
+      ) : (
+        <IndexingSection
+          currentDataset={currentDataset}
+          indexMethod={indexMethod}
+          setIndexMethod={setIndexMethod}
+          keywordNumber={keywordNumber}
+          setKeywordNumber={setKeywordNumber}
+          embeddingModel={embeddingModel}
+          setEmbeddingModel={setEmbeddingModel}
+          embeddingModelList={embeddingModelList}
+          retrievalConfig={retrievalConfig}
+          setRetrievalConfig={setRetrievalConfig}
+          summaryIndexSetting={summaryIndexSetting}
+          handleSummaryIndexSettingChange={handleSummaryIndexSettingChange}
+          showMultiModalTip={showMultiModalTip}
+          readonly={readonly}
+        />
+      )}
+
+      <Separator decorative orientation="horizontal" className="my-1 bg-divider-subtle" />
+
+      {/* Save Button */}
+      <div className="flex gap-x-1">
+        <div className="hidden h-7 w-45 shrink-0 items-center pt-1 @3xl/settings:flex" />
+        <div className="grow">
+          <Button
+            className="min-w-24"
+            variant="primary"
+            loading={loading}
+            disabled={readonly}
+            onClick={handleSave}
+          >
+            {t(($) => $['form.save'], { ns: 'datasetSettings' })}
+          </Button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+const Form = () => {
+  const currentDataset = useDatasetDetailContextWithSelector((state) => state.dataset)
+  if (!currentDataset) return null
+  return <DatasetSettingsForm key={currentDataset.id} currentDataset={currentDataset} />
+}
+
+export default Form

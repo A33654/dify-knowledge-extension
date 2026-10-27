@@ -1,0 +1,126 @@
+import type { BlockSelectorProps } from '@/app/components/workflow/block-selector'
+import type { Node, OnSelectBlock } from '@/app/components/workflow/types'
+import { IconButton } from '@langgenius/dify-ui/icon-button'
+import { useAtomValue } from 'jotai'
+import { memo, useCallback, useState } from 'react'
+import { useTranslation } from 'react-i18next'
+import { useStoreApi } from 'reactflow'
+import BlockSelector from '@/app/components/workflow/block-selector'
+import {
+  editorResourceKindAtom,
+  isChatflowAtom,
+} from '@/app/components/workflow/editor-resource/state'
+import { BlockEnum } from '@/app/components/workflow/types'
+import { useAvailableBlocks } from '../hooks/use-available-blocks'
+import { useNodesMetaData } from '../hooks/use-nodes-meta-data'
+import { usePanelInteractions } from '../hooks/use-panel-interactions'
+import { useNodesReadOnly } from '../hooks/use-workflow'
+import { useWorkflowStore } from '../store'
+import {
+  generateNewNode,
+  getNodeCustomTypeByNodeDataType,
+  getNodesWithSameDefaultDataType,
+} from '../utils'
+
+type AddBlockProps = Pick<
+  BlockSelectorProps,
+  'triggerClassName' | 'sideOffset' | 'alignOffset' | 'isolateKeyboardEvents'
+> & {
+  renderTrigger?: BlockSelectorProps['trigger']
+  onClose?: () => void
+}
+const AddBlock = ({
+  renderTrigger,
+  triggerClassName,
+  sideOffset,
+  alignOffset,
+  onClose,
+  isolateKeyboardEvents,
+}: AddBlockProps) => {
+  const { t } = useTranslation(['workflow'] as const)
+  const store = useStoreApi()
+  const workflowStore = useWorkflowStore()
+  const isChatflow = useAtomValue(isChatflowAtom)
+  const { nodesReadOnly } = useNodesReadOnly()
+  const { handlePaneContextmenuCancel } = usePanelInteractions()
+  const [open, setOpen] = useState(false)
+  const { availableNextBlocks } = useAvailableBlocks(BlockEnum.Start, false)
+  const { nodesMap: nodesMetaDataMap } = useNodesMetaData()
+  const resourceKind = useAtomValue(editorResourceKindAtom)
+  const showStartTab = resourceKind !== 'knowledge-pipeline' && !isChatflow
+
+  const handleOpenChange = useCallback(
+    (open: boolean) => {
+      setOpen(open)
+      if (!open) (onClose ?? handlePaneContextmenuCancel)()
+    },
+    [handlePaneContextmenuCancel, onClose],
+  )
+
+  const handleSelect = useCallback<OnSelectBlock>(
+    (type, pluginDefaultValue) => {
+      const { getNodes } = store.getState()
+      const { defaultValue } = nodesMetaDataMap![type]
+      const nodes = getNodes()
+      const nodesWithSameType = getNodesWithSameDefaultDataType(nodes, type, defaultValue)
+      const { newNode } = generateNewNode({
+        type: getNodeCustomTypeByNodeDataType(type),
+        data: {
+          ...(defaultValue as Node['data']),
+          title:
+            nodesWithSameType.length > 0
+              ? `${defaultValue.title} ${nodesWithSameType.length + 1}`
+              : defaultValue.title,
+          ...pluginDefaultValue,
+          _isCandidate: true,
+        },
+        position: {
+          x: 0,
+          y: 0,
+        },
+      })
+      workflowStore.setState({
+        candidateNode: newNode,
+      })
+    },
+    [store, workflowStore, nodesMetaDataMap],
+  )
+
+  const renderTriggerElement = (
+    <IconButton
+      aria-label={t(($) => $['common.addBlock'], { ns: 'workflow' })}
+      size="lg"
+      disabled={nodesReadOnly}
+      focusableWhenDisabled
+      data-block-selector-open={open ? '' : undefined}
+      className="rounded-md data-block-selector-open:bg-state-accent-active data-block-selector-open:text-text-accent"
+    >
+      <span aria-hidden className="i-ri-add-circle-fill size-4" />
+    </IconButton>
+  )
+
+  return (
+    <BlockSelector
+      open={open}
+      onOpenChange={handleOpenChange}
+      disabled={nodesReadOnly}
+      onSelect={handleSelect}
+      align="start"
+      sideOffset={sideOffset ?? 4}
+      alignOffset={alignOffset ?? -8}
+      trigger={renderTrigger || renderTriggerElement}
+      triggerClassName={triggerClassName}
+      triggerAriaLabel={t(($) => $['common.addBlock'], { ns: 'workflow' })}
+      // A caller-provided trigger, such as a menu row, already shows its own label.
+      triggerTooltip={
+        renderTrigger ? undefined : t(($) => $['common.addBlock'], { ns: 'workflow' })
+      }
+      popupClassName="min-w-[256px]!"
+      availableBlocksTypes={availableNextBlocks}
+      showStartTab={showStartTab}
+      isolateKeyboardEvents={isolateKeyboardEvents}
+    />
+  )
+}
+
+export default memo(AddBlock)

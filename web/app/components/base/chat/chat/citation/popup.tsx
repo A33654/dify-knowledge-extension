@@ -1,0 +1,338 @@
+import type { FC, MouseEvent } from 'react'
+import type { Resources } from './index'
+import { Button } from '@langgenius/dify-ui/button'
+import { Popover, PopoverContent, PopoverTrigger } from '@langgenius/dify-ui/popover'
+import { useMutation, useQuery } from '@tanstack/react-query'
+import { Fragment, useState } from 'react'
+import { useTranslation } from 'react-i18next'
+import FileIcon from '@/app/components/base/file-icon'
+import { toast } from '@/app/notifications'
+import { resolveLogicalDocumentCitation } from '@/features/new-rag/documents/resolve-logical-document-id'
+import { newKnowledgeDocumentDetailPath } from '@/features/new-rag/routes'
+import Link from '@/next/link'
+import { useRouter } from '@/next/navigation'
+import { consoleClient, consoleQuery } from '@/service/console'
+import { downloadUrl } from '@/utils/download'
+import ProgressTooltip from './progress-tooltip'
+import Tooltip from './tooltip'
+
+type PopupProps = {
+  data: Resources
+  showHitInfo?: boolean
+}
+
+const sourceActionClassName =
+  'hidden h-4.5 items-center rounded-none bg-transparent p-0 text-xs text-text-accent group-hover:flex hover:bg-transparent'
+
+function LegacyKnowledgeFSOpenAction({ source }: { source: Resources['sources'][number] }) {
+  const { t } = useTranslation(['knowledgeCitation', 'common'])
+  const router = useRouter()
+  const [isResolving, setIsResolving] = useState(false)
+
+  const handleOpen = async () => {
+    if (isResolving) return
+    setIsResolving(true)
+    try {
+      const citation = await resolveLogicalDocumentCitation({
+        documentAssetId: source.document_asset_id ?? source.document_id,
+        documentVersion: source.document_version ?? undefined,
+        knowledgeSpaceId: source.dataset_id,
+      })
+      if (!citation) {
+        toast.error(t(($) => $.documentNotFoundDescription, { ns: 'knowledgeCitation' }))
+        return
+      }
+      router.push(
+        newKnowledgeDocumentDetailPath(source.dataset_id, citation.documentId, {
+          chunkId: source.segment_id,
+          revision: citation.revision,
+        }),
+      )
+    } catch {
+      toast.error(t(($) => $.documentLoadErrorDescription, { ns: 'knowledgeCitation' }))
+    } finally {
+      setIsResolving(false)
+    }
+  }
+
+  return (
+    <Button
+      variant="ghost-accent"
+      size="small"
+      className={sourceActionClassName}
+      loading={isResolving}
+      onClick={handleOpen}
+    >
+      {t(($) => $['chat.citation.linkToDataset'], { ns: 'common' })}
+      {!isResolving && (
+        <i className="i-custom-vender-line-arrows-arrow-up-right size-3" aria-hidden />
+      )}
+    </Button>
+  )
+}
+
+function SourceOpenAction({ source }: { source: Resources['sources'][number] }) {
+  const { t } = useTranslation(['common'])
+  const label = t(($) => $['chat.citation.linkToDataset'], { ns: 'common' })
+
+  if (source.data_source_type !== 'knowledge_fs') {
+    return (
+      <Link
+        href={`/datasets/${source.dataset_id}/documents/${source.document_id}`}
+        className={sourceActionClassName}
+      >
+        {label}
+        <i className="ml-1 i-custom-vender-line-arrows-arrow-up-right size-3" aria-hidden />
+      </Link>
+    )
+  }
+
+  if (typeof source.document_revision !== 'number')
+    return <LegacyKnowledgeFSOpenAction source={source} />
+
+  return (
+    <Link
+      href={newKnowledgeDocumentDetailPath(source.dataset_id, source.document_id, {
+        chunkId: source.segment_id,
+        revision: source.document_revision,
+      })}
+      className={sourceActionClassName}
+    >
+      {label}
+      <i className="ml-1 i-custom-vender-line-arrows-arrow-up-right size-3" aria-hidden />
+    </Link>
+  )
+}
+
+const Popup: FC<PopupProps> = ({ data, showHitInfo = false }) => {
+  const { t } = useTranslation(['common'])
+  const fileType =
+    data.dataSourceType !== 'notion' ? /\.([^.]*)$/.exec(data.documentName)?.[1] || '' : 'notion'
+  const versionSource = data.sources.find((source) => source.version_id)
+  const versionNo =
+    data.sources.find((source) => source.version_no != null)?.version_no ??
+    data.sources.find((source) => source.document_version != null)?.document_version ??
+    null
+  const versionDatasetId = versionSource?.dataset_id ?? data.sources?.[0]?.dataset_id
+  const versionDocumentId = versionSource?.document_id ?? data.documentId
+  const versionId = versionSource?.version_id ?? null
+  const [showVersionContent, setShowVersionContent] = useState(false)
+
+  const { data: versionDetail, isFetching: isVersionLoading } = useQuery({
+    queryKey: ['document-version-detail', versionDatasetId, versionDocumentId, versionId],
+    queryFn: () =>
+      consoleClient.datasets.byDatasetId.documents.byDocumentId.versions.byVersionId.get({
+        params: {
+          dataset_id: versionDatasetId ?? '',
+          document_id: versionDocumentId ?? '',
+          version_id: versionId ?? '',
+        },
+      }),
+    enabled: showVersionContent && !!versionDatasetId && !!versionDocumentId && !!versionId,
+  })
+
+  const { mutateAsync: downloadDocument, isPending: isDownloading } = useMutation(
+    consoleQuery.datasets.byDatasetId.documents.byDocumentId.download.get.mutationOptions(),
+  )
+
+  const handleDownloadUploadFile = async (e: MouseEvent<HTMLElement>) => {
+    e.preventDefault()
+    e.stopPropagation()
+
+    const isUploadFile = data.dataSourceType === 'upload_file' || data.dataSourceType === 'file'
+    const datasetId = data.sources?.[0]?.dataset_id
+    const documentId = data.documentId || data.sources?.[0]?.document_id
+    if (!isUploadFile || !datasetId || !documentId || isDownloading) return
+
+    try {
+      // Finish the requested download even if the citation unmounts while fetching its URL.
+      const res = await downloadDocument({
+        params: { dataset_id: datasetId, document_id: documentId },
+      })
+      if (res?.url) downloadUrl({ url: res.url, fileName: data.documentName })
+    } catch {
+      // The request layer reports the error; allow retry without an unhandled rejection.
+    }
+  }
+
+  return (
+    <Popover>
+      <PopoverTrigger
+        nativeButton={false}
+        render={
+          <div
+            data-testid="popup-trigger"
+            className="flex h-7 max-w-60 items-center rounded-lg bg-components-button-secondary-bg px-2"
+          >
+            <FileIcon type={fileType} className="mr-1 size-4 shrink-0" />
+            <div className="truncate text-xs text-text-tertiary">{data.documentName}</div>
+            {versionNo != null && (
+              <div
+                data-testid="popup-trigger-version"
+                className="ml-1 shrink-0 rounded border border-divider-subtle px-1 text-[10px] font-medium text-text-tertiary"
+              >
+                v{versionNo}
+              </div>
+            )}
+          </div>
+        }
+      />
+      <PopoverContent
+        side="top"
+        align="start"
+        alignOffset={-2}
+        className="border-none bg-transparent shadow-none"
+      >
+        <div
+          data-testid="popup-content"
+          className="max-w-90 rounded-xl bg-background-section-burn shadow-lg backdrop-blur-[5px]"
+        >
+          <div className="px-4 pt-3 pb-2">
+            <div className="flex h-4.5 items-center">
+              <FileIcon type={fileType} className="mr-1 size-4 shrink-0" />
+              <div className="truncate system-xs-medium text-text-tertiary">
+                {(data.dataSourceType === 'upload_file' || data.dataSourceType === 'file') &&
+                !!data.sources?.[0]?.dataset_id &&
+                !!(data.documentId || data.sources?.[0]?.document_id) ? (
+                  <button
+                    type="button"
+                    className="cursor-pointer truncate border-none bg-transparent p-0 text-left text-text-tertiary hover:underline"
+                    onClick={handleDownloadUploadFile}
+                    disabled={isDownloading}
+                  >
+                    {data.documentName}
+                  </button>
+                ) : (
+                  data.documentName
+                )}
+              </div>
+            </div>
+          </div>
+          {versionId && (
+            <div className="px-4 pb-2">
+              <button
+                type="button"
+                onClick={() => setShowVersionContent((value) => !value)}
+                className="flex cursor-pointer items-center gap-1 border-none bg-transparent p-0 text-xs font-medium text-text-accent hover:underline"
+              >
+                <span
+                  aria-hidden
+                  className={
+                    showVersionContent
+                      ? 'i-ri-arrow-down-s-line size-3.5'
+                      : 'i-ri-arrow-right-s-line size-3.5'
+                  }
+                />
+                {t(($) => $['chat.citation.versionContent'], { ns: 'common' })}
+              </button>
+              {showVersionContent && (
+                <div className="mt-2 max-h-60 overflow-y-auto rounded-lg bg-components-panel-bg p-3">
+                  {isVersionLoading ? (
+                    <div className="text-xs text-text-tertiary">...</div>
+                  ) : (
+                    <pre className="whitespace-pre-wrap font-sans text-[13px] leading-6 text-text-secondary">
+                      {versionDetail?.content || ''}
+                    </pre>
+                  )}
+                </div>
+              )}
+            </div>
+          )}
+          <div className="max-h-112.5 overflow-y-auto rounded-lg bg-components-panel-bg px-4 py-0.5">
+            <div className="w-full">
+              {data.sources.map((source, index) => {
+                const itemKey = source.document_id
+                  ? `${source.document_id}-${source.segment_position ?? index}`
+                  : (source.index_node_hash ?? `${data.documentId ?? 'doc'}-${index}`)
+                return (
+                  <Fragment key={itemKey}>
+                    <div data-testid="popup-source-item" className="group py-3">
+                      <div className="mb-2 flex items-center justify-between">
+                        <div className="flex h-5 items-center rounded-md border border-divider-subtle px-1.5">
+                          {/* replaced svg component with tailwind icon class per lint rule */}
+                          <i
+                            className="mr-0.5 i-custom-vender-line-general-hash-02 size-3 text-text-quaternary"
+                            aria-hidden
+                          />
+                          <div
+                            data-testid="popup-segment-position"
+                            className="text-[11px] font-medium text-text-tertiary"
+                          >
+                            {source.segment_position || index + 1}
+                          </div>
+                          {source.version_no != null && (
+                            <div
+                              data-testid="popup-segment-version"
+                              className="ml-1.5 border-l border-divider-subtle pl-1.5 text-[11px] font-medium text-text-tertiary"
+                            >
+                              v{source.version_no}
+                            </div>
+                          )}
+                        </div>
+                        {showHitInfo && <SourceOpenAction source={source} />}
+                      </div>
+                      <div
+                        data-testid="popup-source-content"
+                        className="text-[13px] wrap-break-word text-text-secondary"
+                      >
+                        {source.content}
+                      </div>
+                      {showHitInfo && (
+                        <div
+                          data-testid="popup-hit-info"
+                          className="mt-2 flex flex-wrap items-center system-xs-medium text-text-quaternary"
+                        >
+                          <Tooltip
+                            text={t(($) => $['chat.citation.characters'], { ns: 'common' })}
+                            data={source.word_count}
+                            icon={
+                              <i
+                                className="mr-1 i-custom-vender-line-editor-type-square size-3"
+                                aria-hidden
+                              />
+                            }
+                          />
+                          <Tooltip
+                            text={t(($) => $['chat.citation.hitCount'], { ns: 'common' })}
+                            data={source.hit_count}
+                            icon={
+                              <i
+                                className="mr-1 i-custom-vender-line-general-target-04 size-3"
+                                aria-hidden
+                              />
+                            }
+                          />
+                          <Tooltip
+                            text={t(($) => $['chat.citation.vectorHash'], { ns: 'common' })}
+                            data={source.index_node_hash?.substring(0, 7)}
+                            icon={
+                              <i
+                                className="mr-1 i-custom-vender-line-editor-bezier-curve-03 size-3"
+                                aria-hidden
+                              />
+                            }
+                          />
+                          {!!source.score && (
+                            <ProgressTooltip data={Number(source.score.toFixed(2))} />
+                          )}
+                        </div>
+                      )}
+                    </div>
+                    {index !== data.sources.length - 1 && (
+                      <div
+                        data-testid="popup-source-divider"
+                        className="my-1 h-px bg-divider-regular"
+                      />
+                    )}
+                  </Fragment>
+                )
+              })}
+            </div>
+          </div>
+        </div>
+      </PopoverContent>
+    </Popover>
+  )
+}
+
+export default Popup

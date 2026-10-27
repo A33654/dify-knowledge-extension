@@ -1,0 +1,273 @@
+import type { ExternalKnowledgeApiResponse } from '@dify/contracts/api/console/datasets/types.gen'
+import type { FC } from 'react'
+import type { CreateExternalAPIReq, FormSchema } from '../declarations'
+import {
+  AlertDialog,
+  AlertDialogCancelButton,
+  AlertDialogConfirmButton,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from '@langgenius/dify-ui/alert-dialog'
+import { Button } from '@langgenius/dify-ui/button'
+import {
+  Dialog,
+  DialogBody,
+  DialogContent,
+  DialogFooter,
+  DialogHeader,
+  DialogHeaderCloseButton,
+  DialogTitle,
+} from '@langgenius/dify-ui/dialog'
+import { Popover, PopoverContent, PopoverTrigger } from '@langgenius/dify-ui/popover'
+import { RiBook2Line, RiInformation2Line } from '@remixicon/react'
+import { memo, useId, useState } from 'react'
+import { useTranslation } from 'react-i18next'
+import { EncryptedBottom } from '@/app/components/base/encrypted-bottom'
+import { toast } from '@/app/notifications'
+import { createExternalAPI } from '@/service/datasets'
+import Form from './Form'
+
+type AddExternalAPIModalProps = {
+  data?: CreateExternalAPIReq
+  onSave: (api: ExternalKnowledgeApiResponse) => void
+  onCancel: () => void
+  onEdit?: (formValue: CreateExternalAPIReq) => Promise<void>
+  datasetBindings?: {
+    id: string
+    name: string
+  }[]
+  isEditMode: boolean
+}
+const formSchemas: FormSchema[] = [
+  {
+    variable: 'name',
+    type: 'text',
+    label: {
+      en_US: 'Name',
+    },
+    required: true,
+  },
+  {
+    variable: 'endpoint',
+    type: 'text',
+    label: {
+      en_US: 'API Endpoint',
+    },
+    required: true,
+  },
+  {
+    variable: 'api_key',
+    type: 'secret',
+    label: {
+      en_US: 'API Key',
+    },
+    required: true,
+  },
+]
+
+const emptyExternalAPIFormData: CreateExternalAPIReq = {
+  name: '',
+  settings: {
+    endpoint: '',
+    api_key: '',
+  },
+}
+
+function isValidHttpEndpoint(value: string) {
+  try {
+    const endpoint = new URL(value)
+    return (
+      (endpoint.protocol === 'http:' || endpoint.protocol === 'https:') && Boolean(endpoint.host)
+    )
+  } catch {
+    return false
+  }
+}
+
+const AddExternalAPIModal: FC<AddExternalAPIModalProps> = ({
+  data,
+  onSave,
+  onCancel,
+  datasetBindings,
+  isEditMode,
+  onEdit,
+}) => {
+  const { t } = useTranslation(['common', 'dataset'])
+  const formId = useId()
+  const [loading, setLoading] = useState(false)
+  const [showConfirm, setShowConfirm] = useState(false)
+  const [endpointError, setEndpointError] = useState<string>()
+  const [formData, setFormData] = useState<CreateExternalAPIReq>(() =>
+    isEditMode && data ? data : emptyExternalAPIFormData,
+  )
+  const hasEmptyInputs = Object.values(formData).some((value) =>
+    typeof value === 'string'
+      ? value.trim() === ''
+      : Object.values(value).some((v) => v.trim() === ''),
+  )
+  const handleDataChange = (val: CreateExternalAPIReq) => {
+    if (val.settings.endpoint !== formData.settings.endpoint) setEndpointError(undefined)
+    setFormData(val)
+  }
+  const handleSave = async () => {
+    const endpoint = formData.settings.endpoint.trim()
+    if (!isValidHttpEndpoint(endpoint)) {
+      setEndpointError(t(($) => $['validation.invalidHttpUrl'], { ns: 'dataset' }))
+      return
+    }
+    if (formData && formData.settings.api_key && formData.settings.api_key?.length < 5) {
+      toast.error(t(($) => $['apiBasedExtension.modal.apiKey.lengthError'], { ns: 'common' }))
+      setLoading(false)
+      return
+    }
+    try {
+      setLoading(true)
+      if (isEditMode && onEdit) {
+        // Only send [__HIDDEN__] when the user has not changed the key, otherwise
+        // send the actual api_key so updated tokens are persisted.
+        const apiKeyToSend =
+          formData.settings.api_key === '[__HIDDEN__]' ? '[__HIDDEN__]' : formData.settings.api_key
+        await onEdit({
+          ...formData,
+          settings: { ...formData.settings, api_key: apiKeyToSend, endpoint },
+        })
+      } else {
+        const res = await createExternalAPI({
+          body: { ...formData, settings: { ...formData.settings, endpoint } },
+        })
+        if (res && res.id) onSave(res)
+      }
+      onCancel()
+    } catch (error) {
+      console.error('Error saving/updating external API:', error)
+      toast.error(t(($) => $['api.actionFailed'], { ns: 'common' }))
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  const handleSubmit = () => {
+    if (hasEmptyInputs || loading) return
+
+    if (isEditMode && (datasetBindings?.length ?? 0) > 0) setShowConfirm(true)
+    else void handleSave()
+  }
+
+  return (
+    <Dialog
+      open
+      disablePointerDismissal
+      onOpenChange={(open) => {
+        if (!open) onCancel()
+      }}
+    >
+      <DialogContent>
+        <DialogHeader>
+          <DialogTitle>
+            {isEditMode
+              ? t(($) => $.editExternalAPIFormTitle, { ns: 'dataset' })
+              : t(($) => $.createExternalAPI, { ns: 'dataset' })}
+          </DialogTitle>
+          {isEditMode && (datasetBindings?.length ?? 0) > 0 && (
+            <div className="flex items-center system-xs-regular text-text-tertiary">
+              {t(($) => $['editExternalAPIFormWarning.front'], { ns: 'dataset' })}
+              <span className="flex cursor-pointer items-center text-text-accent">
+                &nbsp;
+                {datasetBindings?.length}{' '}
+                {t(($) => $['editExternalAPIFormWarning.end'], { ns: 'dataset' })}
+                &nbsp;
+                <Popover>
+                  <PopoverTrigger
+                    openOnHover
+                    aria-label={t(($) => $['editExternalAPIFormWarning.end'], { ns: 'dataset' })}
+                    render={
+                      <button
+                        type="button"
+                        className="flex size-3.5 items-center justify-center rounded-sm hover:bg-state-base-hover"
+                      >
+                        <RiInformation2Line className="size-3.5" />
+                      </button>
+                    }
+                  />
+                  <PopoverContent className="flex w-[320px] items-center self-stretch px-3 py-2">
+                    <div className="p-1">
+                      <div className="flex items-start self-stretch pt-1 pr-3 pb-0.5 pl-2">
+                        <div className="system-xs-medium-uppercase text-text-tertiary">{`${datasetBindings?.length} ${t(($) => $.editExternalAPITooltipTitle, { ns: 'dataset' })}`}</div>
+                      </div>
+                      {datasetBindings?.map((binding) => (
+                        <div
+                          key={binding.id}
+                          className="flex items-center gap-1 self-stretch px-2 py-1"
+                        >
+                          <RiBook2Line className="size-4 text-text-secondary" />
+                          <div className="system-sm-medium text-text-secondary">{binding.name}</div>
+                        </div>
+                      ))}
+                    </div>
+                  </PopoverContent>
+                </Popover>
+              </span>
+            </div>
+          )}
+          <DialogHeaderCloseButton aria-label={t(($) => $['operation.close'], { ns: 'common' })} />
+        </DialogHeader>
+        <DialogBody>
+          <Form
+            id={formId}
+            value={formData}
+            onChange={handleDataChange}
+            onSubmit={(event) => {
+              event.preventDefault()
+              handleSubmit()
+            }}
+            formSchemas={formSchemas}
+            errors={{ endpoint: endpointError }}
+          />
+        </DialogBody>
+        <DialogFooter>
+          <Button type="button" variant="secondary" onClick={onCancel}>
+            {t(($) => $['externalAPIForm.cancel'], { ns: 'dataset' })}
+          </Button>
+          <Button
+            form={formId}
+            type="submit"
+            variant="primary"
+            loading={loading}
+            disabled={hasEmptyInputs}
+          >
+            {t(($) => $['externalAPIForm.save'], { ns: 'dataset' })}
+          </Button>
+        </DialogFooter>
+        <EncryptedBottom
+          front={t(($) => $['externalAPIForm.encrypted.front'], { ns: 'dataset' })}
+          back={t(($) => $['externalAPIForm.encrypted.end'], { ns: 'dataset' })}
+        />
+        <AlertDialog
+          open={showConfirm && (datasetBindings?.length ?? 0) > 0}
+          onOpenChange={(open) => !open && setShowConfirm(false)}
+        >
+          <AlertDialogContent>
+            <AlertDialogHeader>
+              <AlertDialogTitle>Warning</AlertDialogTitle>
+              <AlertDialogDescription>
+                {`${t(($) => $['editExternalAPIConfirmWarningContent.front'], { ns: 'dataset' })} ${datasetBindings?.length} ${t(($) => $['editExternalAPIConfirmWarningContent.end'], { ns: 'dataset' })}`}
+              </AlertDialogDescription>
+            </AlertDialogHeader>
+            <AlertDialogFooter>
+              <AlertDialogCancelButton>
+                {t(($) => $['operation.cancel'], { ns: 'common' })}
+              </AlertDialogCancelButton>
+              <AlertDialogConfirmButton onClick={handleSave}>
+                {t(($) => $['operation.confirm'], { ns: 'common' })}
+              </AlertDialogConfirmButton>
+            </AlertDialogFooter>
+          </AlertDialogContent>
+        </AlertDialog>
+      </DialogContent>
+    </Dialog>
+  )
+}
+export default memo(AddExternalAPIModal)

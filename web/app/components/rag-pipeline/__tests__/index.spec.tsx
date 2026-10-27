@@ -1,0 +1,90 @@
+import { render, screen } from '@testing-library/react'
+import { createNode } from '@/app/components/workflow/__tests__/fixtures'
+import { BlockEnum } from '@/app/components/workflow/types'
+import RagPipelineWrapper from '../index'
+
+let pipelineId: string | undefined
+let pipelineInit: { data?: Record<string, unknown>; isLoading: boolean }
+
+vi.mock('@/context/dataset-detail', () => ({
+  useDatasetDetailContextWithSelector: (selector: (state: Record<string, unknown>) => unknown) =>
+    selector({ dataset: pipelineId ? { pipeline_id: pipelineId } : undefined }),
+}))
+
+vi.mock('../hooks/use-pipeline-init', () => ({
+  usePipelineInit: () => pipelineInit,
+}))
+
+vi.mock('../store', () => ({
+  createRagPipelineSliceSlice: vi.fn(),
+}))
+
+vi.mock('../components/conversion', () => ({
+  default: () => <div>Conversion</div>,
+}))
+
+vi.mock('../components/rag-pipeline-main', () => ({
+  default: ({
+    nodes,
+    edges,
+    viewport,
+  }: {
+    nodes: unknown[]
+    edges: unknown[]
+    viewport: { zoom: number }
+  }) => (
+    <div>
+      Pipeline {nodes.length}/{edges.length}/{viewport.zoom}
+    </div>
+  ),
+}))
+
+vi.mock('@/app/components/workflow', () => ({
+  default: ({ children }: { children: React.ReactNode }) => (
+    <div data-testid="workflow-default-context">{children}</div>
+  ),
+}))
+
+vi.mock('@/app/components/workflow/context', () => ({
+  WorkflowContextProvider: ({ children }: { children: React.ReactNode }) => children,
+}))
+
+describe('RagPipeline', () => {
+  beforeEach(() => {
+    pipelineId = undefined
+    pipelineInit = { data: undefined, isLoading: false }
+  })
+
+  it('offers conversion when the dataset has no pipeline', () => {
+    render(<RagPipelineWrapper />)
+
+    expect(screen.getByText('Conversion')).toBeInTheDocument()
+  })
+
+  it('shows loading while an existing pipeline initializes', () => {
+    pipelineId = 'pipeline-1'
+    pipelineInit = { data: undefined, isLoading: true }
+
+    render(<RagPipelineWrapper />)
+
+    expect(screen.getByRole('progressbar')).toBeInTheDocument()
+  })
+
+  it('passes initialized graph data to the pipeline', () => {
+    pipelineId = 'pipeline-1'
+    pipelineInit = {
+      data: {
+        graph: {
+          nodes: [createNode({ id: 'source', data: { type: BlockEnum.DataSource } })],
+          edges: [],
+          viewport: { x: 0, y: 0, zoom: 1.5 },
+        },
+      },
+      isLoading: false,
+    }
+
+    render(<RagPipelineWrapper />)
+
+    expect(screen.getByText('Pipeline 1/0/1.5')).toBeInTheDocument()
+  })
+})

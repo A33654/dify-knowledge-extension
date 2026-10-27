@@ -1,0 +1,362 @@
+import { Dialog, DialogBackdrop, DialogPopup, DialogPortal } from '@langgenius/dify-ui/dialog'
+import { Tooltip, TooltipContent, TooltipTrigger } from '@langgenius/dify-ui/tooltip'
+import { useHotkey } from '@tanstack/react-hotkeys'
+import { noop } from 'es-toolkit/function'
+import * as React from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
+import { useTranslation } from 'react-i18next'
+import { toast } from '@/app/notifications'
+import { downloadBlob } from '@/utils/download'
+
+type ImagePreviewProps = {
+  url: string
+  title: string
+  onCancel: () => void
+  onPrev?: () => void
+  onNext?: () => void
+}
+
+const isBase64 = (str: string): boolean => {
+  try {
+    return btoa(atob(str)) === str
+  } catch {
+    return false
+  }
+}
+
+const fetchImageAsPng = async (url: string): Promise<Blob> => {
+  const response = await fetch(url)
+  if (!response.ok) throw new Error('Unable to load image')
+  const blob = await response.blob()
+  if (blob.type === 'image/png') return blob
+
+  const bitmap = await createImageBitmap(blob)
+  try {
+    const canvas = document.createElement('canvas')
+    canvas.width = bitmap.width
+    canvas.height = bitmap.height
+    const context = canvas.getContext('2d')
+    if (!context) throw new Error('Unable to convert image')
+    context.drawImage(bitmap, 0, 0)
+    return await new Promise<Blob>((resolve, reject) => {
+      canvas.toBlob((png) => {
+        if (png) resolve(png)
+        else reject(new Error('Unable to encode image'))
+      }, 'image/png')
+    })
+  } finally {
+    bitmap.close()
+  }
+}
+
+function ImagePreviewContent({ url, title, onCancel, onPrev, onNext }: ImagePreviewProps) {
+  const previewRef = useRef<HTMLDivElement>(null)
+  const { t } = useTranslation(['common', 'workflow'])
+  const [scale, setScale] = useState(1)
+  const [position, setPosition] = useState({ x: 0, y: 0 })
+  const [isDragging, setIsDragging] = useState(false)
+  const imgRef = useRef<HTMLImageElement>(null)
+  const dragStartRef = useRef({ x: 0, y: 0 })
+  const [isCopied, setIsCopied] = useState(false)
+
+  const openInNewTab = () => {
+    // Open in a new window, considering the case when the page is inside an iframe
+    if (url.startsWith('http') || url.startsWith('/')) {
+      window.open(url, '_blank')
+    } else if (url.startsWith('data:image') || isBase64(url)) {
+      // Base64 image
+      const win = window.open()
+      if (win) {
+        const image = win.document.createElement('img')
+        image.src = isBase64(url) ? `data:image/png;base64,${url}` : url
+        image.alt = title
+        win.document.body.appendChild(image)
+      }
+    } else {
+      toast.error(`Unable to open image: ${url}`)
+    }
+  }
+
+  const downloadImage = async () => {
+    try {
+      const response = await fetch(isBase64(url) ? `data:image/png;base64,${url}` : url)
+      if (!response.ok) throw new Error('Unable to load image')
+      const data = await response.blob()
+      const extensions: Record<string, string> = {
+        'image/png': 'png',
+        'image/jpeg': 'jpg',
+        'image/gif': 'gif',
+        'image/webp': 'webp',
+        'image/avif': 'avif',
+        'image/svg+xml': 'svg',
+      }
+      const extension = extensions[data.type]
+      const fileName = title.trim() || (extension ? `image.${extension}` : 'image')
+      downloadBlob({ data, fileName })
+    } catch {
+      toast.error(t(($) => $['operation.downloadFailed'], { ns: 'common' }))
+    }
+  }
+
+  const zoomIn = () => {
+    setScale((prevScale) => Math.min(prevScale * 1.2, 15))
+  }
+
+  const zoomOut = () => {
+    setScale((prevScale) => {
+      const newScale = Math.max(prevScale / 1.2, 0.5)
+      if (newScale === 1) setPosition({ x: 0, y: 0 }) // Reset position when fully zoomed out
+
+      return newScale
+    })
+  }
+
+  const imageCopy = useCallback(() => {
+    const shareImage = async () => {
+      try {
+        if (!navigator.clipboard?.write || typeof ClipboardItem === 'undefined')
+          throw new Error('Image clipboard is unavailable')
+
+        const png = fetchImageAsPng(isBase64(url) ? `data:image/png;base64,${url}` : url)
+        // Handle a rejected fetch even if clipboard permission is denied before
+        // the browser consumes the item. Keep write in the click gesture for Safari.
+        void png.catch(noop)
+        await navigator.clipboard.write([
+          new ClipboardItem({
+            'image/png': png,
+          }),
+        ])
+        setIsCopied(true)
+
+        toast.success(t(($) => $['operation.imageCopied'], { ns: 'common' }))
+      } catch (err) {
+        console.error('Failed to copy image:', err)
+
+        setIsCopied(false)
+        toast.error(t(($) => $['operation.imageCopyFailed'], { ns: 'common' }))
+      }
+    }
+    shareImage()
+  }, [t, url])
+
+  const handleWheel = useCallback((e: React.WheelEvent<HTMLDivElement>) => {
+    if (e.deltaY < 0) zoomIn()
+    else zoomOut()
+  }, [])
+
+  const handleMouseDown = useCallback(
+    (e: React.MouseEvent<HTMLDivElement>) => {
+      if (scale > 1) {
+        setIsDragging(true)
+        dragStartRef.current = { x: e.clientX - position.x, y: e.clientY - position.y }
+      }
+    },
+    [scale, position],
+  )
+
+  const handleMouseMove = useCallback(
+    (e: React.MouseEvent<HTMLDivElement>) => {
+      if (isDragging && scale > 1) {
+        const deltaX = e.clientX - dragStartRef.current.x
+        const deltaY = e.clientY - dragStartRef.current.y
+
+        // Calculate boundaries
+        const imgRect = imgRef.current?.getBoundingClientRect()
+        const containerRect = imgRef.current?.parentElement?.getBoundingClientRect()
+
+        if (imgRect && containerRect) {
+          // The image rectangle already includes its scale; position uses viewport pixels.
+          const maxX = Math.max(0, (imgRect.width - containerRect.width) / 2)
+          const maxY = Math.max(0, (imgRect.height - containerRect.height) / 2)
+
+          setPosition({
+            x: Math.max(-maxX, Math.min(maxX, deltaX)),
+            y: Math.max(-maxY, Math.min(maxY, deltaY)),
+          })
+        }
+      }
+    },
+    [isDragging, scale],
+  )
+
+  const handleMouseUp = useCallback(() => {
+    setIsDragging(false)
+  }, [])
+
+  useEffect(() => {
+    document.addEventListener('mouseup', handleMouseUp)
+    return () => {
+      document.removeEventListener('mouseup', handleMouseUp)
+    }
+  }, [handleMouseUp])
+
+  useHotkey('ArrowUp', zoomIn, { target: previewRef })
+  useHotkey('ArrowDown', zoomOut, { target: previewRef })
+  useHotkey('ArrowLeft', () => onPrev?.(), {
+    target: previewRef,
+    enabled: !!onPrev,
+    requireReset: true,
+  })
+  useHotkey('ArrowRight', () => onNext?.(), {
+    target: previewRef,
+    enabled: !!onNext,
+    requireReset: true,
+  })
+
+  const copyImageLabel = t(($) => $['operation.copyImage'], { ns: 'common' })
+  const zoomOutLabel = t(($) => $['operation.zoomOut'], { ns: 'common' })
+  const zoomInLabel = t(($) => $['operation.zoomIn'], { ns: 'common' })
+  const downloadLabel = t(($) => $['operation.download'], { ns: 'common' })
+  const openInNewTabLabel = t(($) => $['operation.openInNewTab'], { ns: 'common' })
+  const cancelLabel = t(($) => $['operation.cancel'], { ns: 'common' })
+
+  return (
+    <>
+      <DialogBackdrop className="bg-transparent!" />
+      <DialogPopup
+        ref={previewRef}
+        aria-label={title.trim() || t(($) => $['common.preview'], { ns: 'workflow' })}
+        className="image-preview-container fixed inset-0 flex h-dvh w-screen items-center justify-center overflow-hidden bg-black/80 p-8"
+      >
+        <div
+          data-testid="image-preview-container"
+          tabIndex={-1}
+          className="flex size-full items-center justify-center"
+          onWheel={handleWheel}
+          onMouseDown={handleMouseDown}
+          onMouseMove={handleMouseMove}
+          onMouseUp={handleMouseUp}
+          style={{ cursor: scale > 1 ? 'move' : 'default' }}
+        >
+          <img
+            ref={imgRef}
+            draggable={false}
+            alt={title}
+            src={isBase64(url) ? `data:image/png;base64,${url}` : url}
+            className="max-h-full max-w-full"
+            style={{
+              transform: `translate(${position.x}px, ${position.y}px) scale(${scale})`,
+              transition: isDragging ? 'none' : 'transform 0.2s ease-in-out',
+            }}
+            data-testid="image-preview-image"
+          />
+        </div>
+        <Tooltip>
+          <TooltipTrigger
+            render={
+              <button
+                type="button"
+                aria-label={copyImageLabel}
+                className="absolute top-6 right-48 flex size-8 cursor-pointer items-center justify-center rounded-lg"
+                onClick={imageCopy}
+              >
+                {isCopied ? (
+                  <span className="i-ri-file-copy-line size-4 text-green-500" aria-hidden="true" />
+                ) : (
+                  <span className="i-ri-file-copy-line size-4 text-gray-500" aria-hidden="true" />
+                )}
+              </button>
+            }
+          />
+          <TooltipContent>{copyImageLabel}</TooltipContent>
+        </Tooltip>
+        <Tooltip>
+          <TooltipTrigger
+            render={
+              <button
+                type="button"
+                aria-label={zoomOutLabel}
+                className="absolute top-6 right-40 flex size-8 cursor-pointer items-center justify-center rounded-lg"
+                onClick={zoomOut}
+              >
+                <span className="i-ri-zoom-out-line size-4 text-gray-500" aria-hidden="true" />
+              </button>
+            }
+          />
+          <TooltipContent>{zoomOutLabel}</TooltipContent>
+        </Tooltip>
+        <Tooltip>
+          <TooltipTrigger
+            render={
+              <button
+                type="button"
+                aria-label={zoomInLabel}
+                className="absolute top-6 right-32 flex size-8 cursor-pointer items-center justify-center rounded-lg"
+                onClick={zoomIn}
+              >
+                <span className="i-ri-zoom-in-line size-4 text-gray-500" aria-hidden="true" />
+              </button>
+            }
+          />
+          <TooltipContent>{zoomInLabel}</TooltipContent>
+        </Tooltip>
+        <Tooltip>
+          <TooltipTrigger
+            render={
+              <button
+                type="button"
+                aria-label={downloadLabel}
+                className="absolute top-6 right-24 flex size-8 cursor-pointer items-center justify-center rounded-lg"
+                onClick={downloadImage}
+              >
+                <span
+                  className="i-ri-download-cloud-2-line size-4 text-gray-500"
+                  aria-hidden="true"
+                />
+              </button>
+            }
+          />
+          <TooltipContent>{downloadLabel}</TooltipContent>
+        </Tooltip>
+        <Tooltip>
+          <TooltipTrigger
+            render={
+              <button
+                type="button"
+                aria-label={openInNewTabLabel}
+                className="absolute top-6 right-16 flex size-8 cursor-pointer items-center justify-center rounded-lg"
+                onClick={openInNewTab}
+              >
+                <span className="i-ri-add-box-line size-4 text-gray-500" aria-hidden="true" />
+              </button>
+            }
+          />
+          <TooltipContent>{openInNewTabLabel}</TooltipContent>
+        </Tooltip>
+        <Tooltip>
+          <TooltipTrigger
+            render={
+              <button
+                type="button"
+                aria-label={cancelLabel}
+                className="absolute top-6 right-6 flex h-8 w-8 cursor-pointer items-center justify-center rounded-lg bg-white/8 backdrop-blur-[2px]"
+                onClick={onCancel}
+              >
+                <span className="i-ri-close-line size-4 text-gray-500" aria-hidden="true" />
+              </button>
+            }
+          />
+          <TooltipContent>{cancelLabel}</TooltipContent>
+        </Tooltip>
+      </DialogPopup>
+    </>
+  )
+}
+
+function ImagePreview(props: ImagePreviewProps) {
+  return (
+    <Dialog
+      open
+      onOpenChange={(open) => {
+        if (!open) props.onCancel()
+      }}
+      disablePointerDismissal
+    >
+      <DialogPortal>
+        <ImagePreviewContent {...props} />
+      </DialogPortal>
+    </Dialog>
+  )
+}
+
+export default ImagePreview

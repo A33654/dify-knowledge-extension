@@ -1,0 +1,251 @@
+# 交付物 4：service_api 新增【任务查询】【手动重试】接口
+# 目标文件：
+#   api/controllers/service_api/dataset/error.py      （新增 2 个错误类）
+#   api/controllers/service_api/dataset/document.py   （响应模型 + 2 个 Resource + 注册）
+
+--- a/api/controllers/service_api/dataset/error.py
++++ b/api/controllers/service_api/dataset/error.py
+@@
+ class PipelineRunError(BaseHTTPException):
+     error_code = "pipeline_run_error"
+     description = "An error occurred while running the pipeline."
+     code = 500
++
++
++class DocumentAsyncTaskNotRetryableError(BaseHTTPException):
++    error_code = "document_async_task_not_retryable"
++    description = "Only tasks in dead_letter state can be retried."
++    code = 409
++
++
++class DocumentAsyncTaskRetryDispatchError(BaseHTTPException):
++    error_code = "document_async_task_retry_dispatch_failed"
++    description = "Failed to re-dispatch the task. It has been returned to dead_letter state."
++    code = 503
+
+--- a/api/controllers/service_api/dataset/document.py
++++ b/api/controllers/service_api/dataset/document.py
+@@ imports
++from datetime import datetime
+ from sqlalchemy import desc, select
+@@
+ from controllers.service_api.dataset.error import (
+     ArchivedDocumentImmutableError,
++    DocumentAsyncTaskNotRetryableError,
++    DocumentAsyncTaskRetryDispatchError,
+     InvalidMetadataError,
+ )
+@@
+ from tasks.document_async_task import document_async_task
++from tasks.document_async_task import MAX_RETRIES, TASK_EXECUTION_ID_KEY
+@@ 响应模型（紧跟 DocumentAsyncTaskResponse 之后，约 320 行）
+ class DocumentAsyncTaskResponse(ResponseModel):
+     task_id: str
+     trace_id: str
+     status: str
++
++
++class DocumentAsyncTaskStatusResponse(ResponseModel):
++    task_id: str
++    trace_id: str
++    status: str
++    attempt_count: int
++    retry_count: int
++    max_retries: int
++    next_attempt_at: datetime | None
++    last_error_code: str | None
++    last_error_message: str | None
++    progress: int
++    document_id: str | None
++    document_indexing_status: str | None
++    created_at: datetime | None
++    completed_at: datetime | None
+@@ 注册（约 402 行 register_response_schema_models 调用内）
+ register_response_schema_models(
+     service_api_ns,
+     UrlResponse,
+     DocumentAsyncTaskResponse,
++    DocumentAsyncTaskStatusResponse,
+     DocumentResponse,
+@@ 派生进度表 + 响应构造（放在 _async_task_response 附近）
++# `failed` is not terminal: it means the retry budget is not exhausted yet.
++_ASYNC_TASK_PROGRESS: dict[str, int] = {
++    DocumentAsyncTaskStatus.PENDING: 0,
++    DocumentAsyncTaskStatus.PROCESSING: 50,
++    DocumentAsyncTaskStatus.FAILED: 50,
++    DocumentAsyncTaskStatus.SUCCESS: 100,
++    DocumentAsyncTaskStatus.DEAD_LETTER: 100,
++}
++
++
++def _async_task_status_response(session: Session, task: DocumentAsyncTask) -> dict[str, Any]:
++    document = None
++    if task.document_id is not None:
++        document = session.scalar(select(Document).where(Document.id == task.document_id))
++    attempt_count = task.attempt_count or 0
++    return dump_response(
++        DocumentAsyncTaskStatusResponse,
++        {
++            "task_id": task.id,
++            "trace_id": task.trace_id,
++            "status": str(task.status),
++            "attempt_count": attempt_count,
++            # Derived view: attempt_count counts executions, the first of which
++            # is not a retry.
++            "retry_count": max(attempt_count - 1, 0),
++            "max_retries": MAX_RETRIES,
++            "next_attempt_at": task.next_attempt_at,
++            "last_error_code": task.last_error_code,
++            "last_error_message": task.last_error,
++            "progress": _ASYNC_TASK_PROGRESS.get(str(task.status), 0),
++            "document_id": task.document_id,
++            "document_indexing_status": str(document.indexing_status) if document is not None else None,
++            "created_at": task.created_at,
++            "completed_at": task.completed_at,
++        },
++    )
++
++
++def _load_owned_async_task(
++    session: Session, *, tenant_id: str, dataset_id: str, task_id: str
++) -> DocumentAsyncTask | None:
++    """Return the task only when it belongs to the caller's tenant and dataset."""
++    task = DocumentAsyncTaskService.get_by_id(session, task_id)
++    if task is None:
++        return None
++    if task.tenant_id != tenant_id or task.dataset_id != dataset_id:
++        return None
++    return task
++
+@@ 两个新 Resource（建议放在 DocumentAddByFileApi 之后）
++@service_api_ns.route("/datasets/<uuid:dataset_id>/documents/async-tasks/<uuid:task_id>")
++class DocumentAsyncTaskStatusApi(DatasetApiResource):
++    @service_api_ns.doc(
++        summary="Get document async task",
++        description=(
++            "Returns the status, progress and error information of an asynchronous document upload task. "
++            "Poll this endpoint with the `task_id` returned by the create-by-file endpoint. "
++            "`next_attempt_at` is set only while an automatic retry is still scheduled; "
++            "`dead_letter` is terminal and requires a manual retry."
++        ),
++        tags=["Documents"],
++    )
++    @service_api_ns.doc(
++        responses={
++            200: "Task retrieved successfully",
++            401: "Unauthorized - invalid API token",
++            404: "Dataset or task not found",
++        }
++    )
++    @service_api_ns.response(
++        200, "Task retrieved successfully", service_api_ns.models[DocumentAsyncTaskStatusResponse.__name__]
++    )
++    @with_session(write=False)
++    def get(self, session: Session, tenant_id, dataset_id: UUID, task_id: UUID):
++        tenant_id_str = str(tenant_id)
++        dataset_id_str = str(dataset_id)
++        dataset = session.scalar(
++            select(Dataset).where(Dataset.tenant_id == tenant_id_str, Dataset.id == dataset_id_str).limit(1)
++        )
++        if not dataset:
++            raise NotFound("Dataset not found.")
++
++        task = _load_owned_async_task(
++            session, tenant_id=tenant_id_str, dataset_id=dataset_id_str, task_id=str(task_id)
++        )
++        # Deliberately 404 rather than 403 so the endpoint cannot be used to
++        # probe whether a task id exists in another tenant.
++        if task is None:
++            raise NotFound("Task not found.")
++        return _async_task_status_response(session, task), 200
++
++
++@service_api_ns.route("/datasets/<uuid:dataset_id>/documents/async-tasks/<uuid:task_id>/retry")
++class DocumentAsyncTaskRetryApi(DatasetApiResource):
++    @service_api_ns.doc(
++        summary="Retry a dead-letter document async task",
++        description=(
++            "Re-queues an asynchronous document upload task that reached `dead_letter`. "
++            "The same `task_id` is reused so an in-flight polling client keeps working. "
++            "Returns 202 once the task is published; the row is reset to `pending` and "
++            "`attempt_count` restarts from zero."
++        ),
++        tags=["Documents"],
++    )
++    @service_api_ns.doc(
++        responses={
++            202: "Task re-queued successfully",
++            401: "Unauthorized - invalid API token",
++            404: "Dataset or task not found",
++            409: "Task is not in dead_letter state",
++            503: "Failed to re-dispatch, the task stays in dead_letter",
++        }
++    )
++    @service_api_ns.response(
++        202, "Task re-queued successfully", service_api_ns.models[DocumentAsyncTaskStatusResponse.__name__]
++    )
++    @error_responses(DocumentAsyncTaskNotRetryableError, DocumentAsyncTaskRetryDispatchError)
++    @with_session(write=True)
++    def post(self, session: Session, tenant_id, dataset_id: UUID, task_id: UUID):
++        tenant_id_str = str(tenant_id)
++        dataset_id_str = str(dataset_id)
++        dataset = session.scalar(
++            select(Dataset).where(Dataset.tenant_id == tenant_id_str, Dataset.id == dataset_id_str).limit(1)
++        )
++        if not dataset:
++            raise NotFound("Dataset not found.")
++
++        task = _load_owned_async_task(
++            session, tenant_id=tenant_id_str, dataset_id=dataset_id_str, task_id=str(task_id)
++        )
++        if task is None:
++            raise NotFound("Task not found.")
++        if task.status != DocumentAsyncTaskStatus.DEAD_LETTER:
++            raise DocumentAsyncTaskNotRetryableError(
++                f"Task is in {task.status} state, only dead_letter tasks can be retried."
++            )
++
++        task.status = DocumentAsyncTaskStatus.PENDING
++        task.attempt_count = 0
++        task.last_error = None
++        task.last_error_code = None
++        task.next_attempt_at = None
++        task.processing_started_at = None
++        task.completed_at = None
++        session.add(task)
++        # Commit before publishing so the worker always reads committed state,
++        # the same guarantee the create endpoint relies on.
++        session.commit()
++
++        try:
++            document_async_task.apply_async(
++                kwargs={"task_id": task.id, TASK_EXECUTION_ID_KEY: task.id},
++                queue="dataset",
++            )
++        except Exception:
++            logger.exception("Failed to re-dispatch async task %s", task.id)
++            # Roll the row forward to its terminal state; the surrounding
++            # `with_session` rollback cannot undo the commit above.
++            task.status = DocumentAsyncTaskStatus.DEAD_LETTER
++            task.last_error = "failed to re-dispatch task"
++            task.last_error_code = "retry_dispatch_failed"
++            task.completed_at = naive_utc_now()
++            session.add(task)
++            session.commit()
++            raise DocumentAsyncTaskRetryDispatchError()
++
++        return _async_task_status_response(session, task), 202
+
+# ---------------------------------------------------------------------------
+# 校验要点
+# ---------------------------------------------------------------------------
+# 1. document.py 里 `DocumentAsyncTask`、`logger`、`naive_utc_now` 需确认已导入：
+#    - DocumentAsyncTask：目前未导入，需补 `from models.dataset import ..., DocumentAsyncTask`
+#    - logger：文件内若没有，需补 `logger = logging.getLogger(__name__)` + `import logging`
+#    - naive_utc_now：需补 `from libs.datetime_utils import naive_utc_now`
+#    - `Not Found` 用的 `NotFound` 已从 werkzeug.exceptions 导入（第 28 行），可直接用。
+# 2. lint：新响应模型必须进 register_response_schema_models，否则
+#    `python api/dev/lint_response_contracts.py` 会报 mismatch（当前基线 735 valid / 0 mismatch）。
+# 3. ruff 禁 flask_restx.reqparse —— 本接口无请求体，无需参数校验模型。
+# 4. 不新增队列：apply_async(queue="dataset") 复用现有 dataset 队列，
+#    因此 entrypoint.sh 与 ext_celery.py imports 均不动。

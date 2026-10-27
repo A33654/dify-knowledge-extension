@@ -1,0 +1,125 @@
+'use client'
+import type { DocumentDetailResponse } from '@dify/contracts/api/console/datasets/types.gen'
+import type { FC } from 'react'
+import { Button } from '@langgenius/dify-ui/button'
+import { cn } from '@langgenius/dify-ui/cn'
+import { Separator } from '@langgenius/dify-ui/separator'
+import * as React from 'react'
+import { useTranslation } from 'react-i18next'
+import useMetadataDocument from '../hooks/use-metadata-document'
+import InfoGroup from './info-group'
+import NoData from './no-data'
+
+const i18nPrefix = 'metadata.documentMetadata'
+
+type Props = Readonly<{
+  datasetId: string
+  documentId: string
+  className?: string
+  docDetail: DocumentDetailResponse
+  canEdit?: boolean
+}>
+const MetadataDocument: FC<Props> = ({
+  datasetId,
+  documentId,
+  className,
+  docDetail,
+  canEdit = false,
+}) => {
+  const { t } = useTranslation(['common', 'dataset'])
+
+  const {
+    embeddingAvailable,
+    isEdit,
+    setIsEdit,
+    list,
+    tempList,
+    setTempList,
+    handleSelectMetaData,
+    handleAddMetaData,
+    hasData,
+    builtList,
+    builtInEnabled,
+    startToEdit,
+    handleSave,
+    handleCancel,
+    originInfo,
+    technicalParameters,
+  } = useMetadataDocument({ datasetId, documentId, docDetail })
+
+  return (
+    <div className={cn('w-97 space-y-4', className)}>
+      {hasData || isEdit ? (
+        <div className="ps-2">
+          <InfoGroup
+            title={t(($) => $['metadata.metadata'], { ns: 'dataset' })}
+            uppercaseTitle={false}
+            titleTooltip={t(($) => $[`${i18nPrefix}.metadataToolTip`], { ns: 'dataset' })}
+            list={isEdit ? tempList : list}
+            dataSetId={datasetId}
+            headerRight={
+              embeddingAvailable &&
+              canEdit &&
+              (isEdit ? (
+                <div className="flex space-x-1">
+                  <Button variant="ghost" size="small" onClick={handleCancel}>
+                    <div>{t(($) => $['operation.cancel'], { ns: 'common' })}</div>
+                  </Button>
+                  <Button variant="primary" size="small" onClick={handleSave}>
+                    <div>{t(($) => $['operation.save'], { ns: 'common' })}</div>
+                  </Button>
+                </div>
+              ) : (
+                <Button variant="ghost" size="small" onClick={startToEdit}>
+                  <span className="i-ri-edit-line size-3.5 cursor-pointer text-text-tertiary" />
+                  <div>{t(($) => $['operation.edit'], { ns: 'common' })}</div>
+                </Button>
+              ))
+            }
+            isEdit={isEdit}
+            contentClassName="mt-5"
+            onChange={(item) => {
+              const newList = tempList.map((i) => (i.name === item.name ? item : i))
+              setTempList(newList)
+            }}
+            onDelete={(item) => {
+              const newList = tempList.filter((i) => i.name !== item.name)
+              setTempList(newList)
+            }}
+            onAdd={handleAddMetaData}
+            onSelect={handleSelectMetaData}
+          />
+        </div>
+      ) : (
+        embeddingAvailable && canEdit && <NoData onStart={() => setIsEdit(true)} />
+      )}
+      {builtInEnabled && (
+        <div className="ps-2">
+          <Separator className="my-3 h-[0.5px]" variant="gradient" />
+          <InfoGroup
+            noHeader
+            titleTooltip="Built-in metadata is system-generated metadata that is automatically added to the document. You can enable or disable built-in metadata here."
+            list={builtList}
+            dataSetId={datasetId}
+          />
+        </div>
+      )}
+
+      {/* Old Metadata */}
+      <InfoGroup
+        className="ps-2"
+        title={t(($) => $[`${i18nPrefix}.documentInformation`], { ns: 'dataset' })}
+        list={originInfo}
+        dataSetId={datasetId}
+      />
+      <InfoGroup
+        className="ps-2"
+        title={t(($) => $[`${i18nPrefix}.technicalParameters`], { ns: 'dataset' })}
+        list={technicalParameters}
+        dataSetId={datasetId}
+      />
+    </div>
+  )
+}
+
+export default React.memo(MetadataDocument)

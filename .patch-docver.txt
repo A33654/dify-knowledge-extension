@@ -1,0 +1,103 @@
+﻿*** Begin Patch
+*** Update File: api/services/knowledge/document_version_service.py
+@@
+-    def get_latest_version(
++    def get_latest_version(
+         session: Session,
+         *,
+         tenant_id: str,
+         dataset_id: str,
+         document_id: str,
+         business_key: str,
++        for_update: bool = False,
+     ) -> DocumentVersion | None:
+-        stmt = (
++        stmt = (
+             select(DocumentVersion)
+             .where(
+                 DocumentVersion.tenant_id == tenant_id,
+                 DocumentVersion.dataset_id == dataset_id,
+                 DocumentVersion.document_id == document_id,
+                 DocumentVersion.business_key == business_key,
+             )
+             .order_by(DocumentVersion.version.desc())
+             .limit(1)
+         )
++        if for_update:
++            stmt = stmt.with_for_update()
+         return session.scalar(stmt)
+ 
+     @staticmethod
+-    def get_version(session: Session, *, tenant_id: str, version_id: str) -> DocumentVersion | None:
++    def get_version(
++        session: Session,
++        *,
++        tenant_id: str,
++        dataset_id: str,
++        version_id: str,
++    ) -> DocumentVersion | None:
+         return session.scalar(
+             select(DocumentVersion).where(
+                 DocumentVersion.id == version_id,
+                 DocumentVersion.tenant_id == tenant_id,
++                DocumentVersion.dataset_id == dataset_id,
+             )
+         )
+ 
+     @staticmethod
+-    def list_versions(session: Session, *, tenant_id: str, document_id: str) -> list[DocumentVersion]:
++    def list_versions(
++        session: Session,
++        *,
++        tenant_id: str,
++        dataset_id: str,
++        document_id: str,
++    ) -> list[DocumentVersion]:
+         stmt = (
+             select(DocumentVersion)
+             .where(
+                 DocumentVersion.tenant_id == tenant_id,
++                DocumentVersion.dataset_id == dataset_id,
+                 DocumentVersion.document_id == document_id,
+             )
+             .order_by(DocumentVersion.version.desc())
+         )
+         return list(session.scalars(stmt).all())
+@@
+     ) -> tuple[DocumentVersion, bool]:
+         business_key = DocumentVersionService.get_business_key(document.name, document.doc_metadata)
++
++        # Serialize version resolution per document. Concurrent uploads of the
++        # same document must not both observe the same latest version and insert
++        # duplicate rows. Locking the document row forces the second transaction
++        # to wait until the first commit is visible before resolving a version.
++        session.execute(select(Document.id).where(Document.id == document.id).with_for_update())
+ 
+         # Identical content reuses an existing version of the same document,
+-        # regardless of whether it is currently the latest version.
++        # regardless of whether it is currently the latest version. The locking
++        # read bypasses MySQL's repeatable-read snapshot so a version committed
++        # by a concurrent transaction is still observed.
+         existing: DocumentVersion | None = None
+         if file_hash:
+             existing = session.scalar(
+                 select(DocumentVersion)
+                 .where(
+@@
+                     DocumentVersion.document_id == document.id,
+                     DocumentVersion.file_hash == file_hash,
+                 )
+                 .order_by(DocumentVersion.version.asc())
+                 .limit(1)
++                .with_for_update()
+             )
+@@
+         latest = DocumentVersionService.get_latest_version(
+             session,
+             tenant_id=document.tenant_id,
+             dataset_id=document.dataset_id,
+             document_id=document.id,
+             business_key=business_key,
++            for_update=True,
+         )
+*** End Patch

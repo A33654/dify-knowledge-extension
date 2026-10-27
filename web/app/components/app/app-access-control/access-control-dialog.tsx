@@ -1,0 +1,41 @@
+import type { ReactNode } from 'react'
+import { cn } from '@langgenius/dify-ui/cn'
+import { Dialog, DialogClose, DialogContent } from '@langgenius/dify-ui/dialog'
+import { IconButton } from '@langgenius/dify-ui/icon-button'
+import { useCallback } from 'react'
+import { useTranslation } from 'react-i18next'
+
+type DialogProps = {
+  className?: string
+  children: ReactNode
+  show: boolean
+  onClose?: () => void
+}
+
+const AccessControlDialog = ({ className, children, show, onClose }: DialogProps) => {
+  const { t } = useTranslation(['common'])
+  const close = useCallback(() => {
+    onClose?.()
+  }, [onClose])
+
+  return (
+    <Dialog open={show} disablePointerDismissal onOpenChange={(open) => !open && close()}>
+      <DialogContent className={cn('min-h-80.75 w-150 transition-all', className)}>
+        <DialogClose
+          render={
+            <IconButton
+              aria-label={t(($) => $['operation.close'], { ns: 'common' })}
+              size="lg"
+              className="absolute top-5 right-5"
+            >
+              <span aria-hidden className="i-ri-close-line size-4" />
+            </IconButton>
+          }
+        />
+        {children}
+      </DialogContent>
+    </Dialog>
+  )
+}
+
+export default AccessControlDialog

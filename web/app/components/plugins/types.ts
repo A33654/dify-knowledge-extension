@@ -1,0 +1,431 @@
+import type {
+  AgentStrategyProviderEntity,
+  DatasourceProviderEntity,
+  EndpointProviderDeclarationResponse,
+  PluginInstallTask,
+  PluginInstallTaskPluginStatus,
+} from '@dify/contracts/api/console/workspaces/types.gen'
+import type { FormTypeEnum } from '../base/form/types'
+import type { CredentialFormSchemaBase } from '../header/account-setting/model-provider-page/declarations'
+import type { AutoUpdateConfig } from './reference-setting-modal/auto-update-setting/types'
+import type { TypeWithI18N } from '@/app/components/base/form/types'
+import type { ToolCredential } from '@/app/components/tools/types'
+import type { Locale } from '@/i18n/locale'
+import type { PluginLanguage } from '@/i18n/metadata'
+
+export const PluginCategoryEnum = {
+  tool: 'tool',
+  model: 'model',
+  extension: 'extension',
+  agent: 'agent-strategy',
+  datasource: 'datasource',
+  trigger: 'trigger',
+} as const
+
+export type PluginCategoryEnum = (typeof PluginCategoryEnum)[keyof typeof PluginCategoryEnum]
+
+export const PluginSource = {
+  marketplace: 'marketplace',
+  github: 'github',
+  local: 'package',
+  debugging: 'remote',
+} as const
+
+export type PluginSource = (typeof PluginSource)[keyof typeof PluginSource]
+
+type PluginToolDeclaration = {
+  identity: {
+    author: string
+    name: string
+    description: Record<Locale | PluginLanguage, string>
+    icon: string
+    label: Record<Locale | PluginLanguage, string>
+    tags: string[]
+  }
+  credentials_schema: ToolCredential[] // TODO
+}
+
+type PluginDeclarationMeta = {
+  version: string
+  minimum_dify_version?: string
+}
+
+// Plugin manifest
+export type PluginDeclaration = {
+  plugin_unique_identifier: string
+  version: string
+  author: string
+  icon: string
+  icon_dark?: string
+  name: string
+  category: PluginCategoryEnum
+  label: Record<Locale | PluginLanguage, string>
+  description: Record<Locale | PluginLanguage, string>
+  created_at: string
+  resource: unknown // useless in frontend
+  plugins: unknown // useless in frontend
+  verified: boolean
+  endpoint?: EndpointProviderDeclarationResponse | null
+  tool?: PluginToolDeclaration
+  datasource?: DatasourceProviderEntity | null
+  model: any
+  tags: string[]
+  agent_strategy?: AgentStrategyProviderEntity | null
+  meta: PluginDeclarationMeta
+  trigger: PluginTriggerDefinition
+}
+
+export type PluginTriggerSubscriptionConstructor = {
+  credentials_schema: CredentialsSchema[]
+  oauth_schema: OauthSchema
+  parameters: ParametersSchema[]
+}
+
+type PluginTriggerDefinition = {
+  events: TriggerEvent[]
+  identity: Identity
+  subscription_constructor: PluginTriggerSubscriptionConstructor
+  subscription_schema: ParametersSchema[]
+}
+
+type CredentialsSchema = {
+  name: string
+  label: Record<Locale | PluginLanguage, string>
+  description: Record<Locale | PluginLanguage, string>
+  type: FormTypeEnum
+  scope: any
+  required: boolean
+  default: any
+  options: any
+  help: Record<Locale | PluginLanguage, string>
+  url: string
+  placeholder: Record<Locale | PluginLanguage, string>
+}
+
+type OauthSchema = {
+  client_schema: CredentialsSchema[]
+  credentials_schema: CredentialsSchema[]
+}
+
+export type ParametersSchema = {
+  name: string
+  label: Record<Locale | PluginLanguage, string>
+  type: FormTypeEnum
+  auto_generate: unknown
+  template: unknown
+  scope: any
+  required: boolean
+  multiple: boolean
+  default?: string | string[]
+  min: unknown
+  max: unknown
+  precision: unknown
+  options?: Array<{
+    value: string
+    label: Record<Locale | PluginLanguage, string>
+    icon?: string
+  }>
+  description: Record<Locale | PluginLanguage, string>
+}
+
+export type TriggerEventParameter = {
+  name: string
+  label: TypeWithI18N
+  type: string
+  auto_generate: unknown
+  template: unknown
+  scope: any
+  required: boolean
+  multiple: boolean
+  default: any
+  min: unknown
+  max: unknown
+  precision: unknown
+  options?: Array<{
+    value: string
+    label: TypeWithI18N
+    icon?: string
+  }>
+  description?: TypeWithI18N
+}
+
+export type TriggerEvent = {
+  name: string
+  identity: {
+    author: string
+    name: string
+    label: TypeWithI18N
+    provider?: string
+  }
+  description: TypeWithI18N
+  parameters: TriggerEventParameter[]
+  output_schema: Record<string, any>
+}
+
+export type PluginManifestInMarket = {
+  plugin_unique_identifier: string
+  name: string
+  org: string
+  icon: string
+  label: Record<Locale | PluginLanguage, string>
+  category: PluginCategoryEnum
+  version: string // combine the other place to it
+  latest_version: string
+  brief: Record<Locale | PluginLanguage, string>
+  introduction: string
+  verified: boolean
+  install_count: number
+  badges: string[] | null
+  verification: {
+    authorized_category: 'langgenius' | 'partner' | 'community'
+  }
+  from: Dependency['type']
+}
+
+export const SupportedCreationMethods = {
+  OAUTH: 'OAUTH',
+  APIKEY: 'APIKEY',
+  MANUAL: 'MANUAL',
+} as const
+
+export type SupportedCreationMethods =
+  (typeof SupportedCreationMethods)[keyof typeof SupportedCreationMethods]
+
+export type PluginDetail = {
+  id: string
+  created_at: string
+  updated_at: string
+  name: string
+  plugin_id: string
+  plugin_unique_identifier: string
+  declaration: PluginDeclaration
+  installation_id: string
+  tenant_id: string
+  endpoints_setups: number
+  endpoints_active: number
+  version: string
+  latest_version: string
+  latest_unique_identifier: string
+  source: PluginSource
+  meta?: MetaData
+  status: 'active' | 'deleted'
+  deprecated_reason: string
+  alternative_plugin_id: string
+}
+
+export type Plugin = {
+  type:
+    | 'plugin'
+    | 'bundle'
+    | 'model'
+    | 'extension'
+    | 'tool'
+    | 'agent_strategy'
+    | 'datasource'
+    | 'trigger'
+  org: string
+  author?: string
+  name: string
+  plugin_id: string
+  version: string
+  latest_version: string
+  latest_package_identifier: string
+  icon: string
+  icon_dark?: string
+  verified: boolean
+  label: Partial<Record<Locale | PluginLanguage, string>>
+  brief: Partial<Record<Locale | PluginLanguage, string>>
+  description: Partial<Record<Locale | PluginLanguage, string>>
+  // Repo readme.md content
+  introduction: string
+  repository: string
+  category: PluginCategoryEnum
+  install_count: number
+  endpoint: {
+    settings: CredentialFormSchemaBase[]
+  }
+  tags: { name: string }[]
+  badges: string[] | null
+  verification: {
+    authorized_category: 'langgenius' | 'partner' | 'community'
+  }
+  from: Dependency['type']
+}
+
+export const PermissionType = {
+  everyone: 'everyone',
+  admin: 'admins',
+  noOne: 'noone',
+} as const
+
+export type PermissionType = (typeof PermissionType)[keyof typeof PermissionType]
+
+export type Permissions = {
+  install_permission: PermissionType
+  debug_permission: PermissionType
+}
+
+export type ReferenceSetting = {
+  permission: Permissions
+  auto_upgrade: AutoUpdateConfig
+}
+
+export type UpdateFromMarketPlacePayload = {
+  category: PluginCategoryEnum
+  originalPackageInfo: {
+    id: string
+    payload: PluginDeclaration
+  }
+  targetPackageInfo: {
+    id: string
+    version: string
+  }
+}
+
+export type UpdateFromGitHubPayload = {
+  originalPackageInfo: {
+    id: string
+    repo: string
+    version: string
+    package: string
+    releases: GitHubRepoReleaseResponse[]
+  }
+}
+
+export type UpdatePluginPayload = {
+  category: PluginCategoryEnum
+  github: UpdateFromGitHubPayload
+}
+
+export const InstallStepFromGitHub = {
+  setUrl: 'url',
+  selectPackage: 'selecting',
+  readyToInstall: 'readyToInstall',
+  uploadFailed: 'uploadFailed',
+  installed: 'installed',
+  installFailed: 'failed',
+} as const
+
+export type InstallStepFromGitHub =
+  (typeof InstallStepFromGitHub)[keyof typeof InstallStepFromGitHub]
+
+export type InstallState = {
+  step: InstallStepFromGitHub
+  repoUrl: string
+  selectedVersion: string
+  selectedPackage: string
+  releases: GitHubRepoReleaseResponse[]
+}
+
+export type GitHubUrlInfo = {
+  isValid: boolean
+  owner?: string
+  repo?: string
+}
+
+export const InstallStep = {
+  uploading: 'uploading',
+  uploadFailed: 'uploadFailed',
+  readyToInstall: 'readyToInstall',
+  installing: 'installing',
+  installed: 'installed',
+  installFailed: 'failed',
+} as const
+
+export type InstallStep = (typeof InstallStep)[keyof typeof InstallStep]
+
+type GitHubAsset = {
+  id: number
+  name: string
+  browser_download_url: string
+}
+
+export type GitHubRepoReleaseResponse = {
+  tag_name: string
+  assets: GitHubAsset[]
+}
+
+export type InstallStatusResponse = {
+  status: TaskStatus
+  taskId: string
+  uniqueIdentifier: string
+}
+
+export type InstallStatus = {
+  success: boolean
+  isFromMarketPlace?: boolean
+}
+
+export const TaskStatus = {
+  pending: 'pending',
+  running: 'running',
+  success: 'success',
+  failed: 'failed',
+} as const
+
+export type TaskStatus = (typeof TaskStatus)[keyof typeof TaskStatus]
+
+export type PluginStatus = PluginInstallTaskPluginStatus & {
+  // The task the status belongs to, added when the task list is read.
+  taskId: string
+}
+
+export type PluginTask = Omit<PluginInstallTask, 'plugins'> & { plugins: PluginStatus[] }
+
+export type MetaData = {
+  repo: string
+  version: string
+  package: string
+}
+
+export type GitHubItemAndMarketPlaceDependency = {
+  type: 'github' | 'marketplace' | 'package'
+  value: {
+    repo?: string
+    organization?: string // from bundle marketplace dependency
+    plugin?: string // from bundle marketplace dependency
+    version?: string // from app DSL
+    package?: string // from app DSL
+    release?: string // from local package. same to the version
+    packages?: string // from local package. same to the package
+    github_plugin_unique_identifier?: string
+    marketplace_plugin_unique_identifier?: string
+    plugin_unique_identifier?: string
+  }
+}
+
+export type PackageDependency = {
+  type: 'github' | 'marketplace' | 'package'
+  value: {
+    unique_identifier: string
+    manifest: PluginDeclaration
+  }
+}
+
+export type Dependency = GitHubItemAndMarketPlaceDependency | PackageDependency
+
+export type VersionInfo = {
+  installedId: string // use to uninstall
+  installedVersion: string
+  uniqueIdentifier: string
+}
+
+export type VersionProps = {
+  hasInstalled: boolean
+  installedVersion?: string
+  toInstallVersion: string
+}
+
+type Identity = {
+  author: string
+  name: string
+  label: Record<Locale | PluginLanguage, string>
+  description: Record<Locale | PluginLanguage, string>
+  icon: string
+  icon_dark?: string
+  tags: string[]
+}
+
+export type PluginMeta = {
+  version: string // the version of dify sdk
+}

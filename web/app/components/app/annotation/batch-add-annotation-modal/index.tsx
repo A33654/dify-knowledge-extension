@@ -1,0 +1,150 @@
+'use client'
+import type { FC } from 'react'
+import { Button } from '@langgenius/dify-ui/button'
+import {
+  Dialog,
+  DialogBody,
+  DialogContent,
+  DialogFooter,
+  DialogHeader,
+  DialogHeaderCloseButton,
+  DialogTitle,
+} from '@langgenius/dify-ui/dialog'
+import { useQuery } from '@tanstack/react-query'
+import { useAtomValue } from 'jotai'
+import * as React from 'react'
+import { useEffect, useState } from 'react'
+import { useTranslation } from 'react-i18next'
+import AnnotationFull from '@/app/components/billing/annotation-full'
+import { toast } from '@/app/notifications'
+import { deploymentEditionAtom } from '@/features/system-features/state'
+import { annotationBatchImport } from '@/service/annotation'
+import { consoleClient, consoleQuery } from '@/service/console'
+import CSVDownloader from './csv-downloader'
+import CSVUploader from './csv-uploader'
+
+export const ProcessStatus = {
+  WAITING: 'waiting',
+  PROCESSING: 'processing',
+  COMPLETED: 'completed',
+  ERROR: 'error',
+} as const
+
+export type ProcessStatus = (typeof ProcessStatus)[keyof typeof ProcessStatus]
+
+export type IBatchModalProps = {
+  appId: string
+  isShow: boolean
+  onCancel: () => void
+  onAdded: () => void
+}
+
+const BatchModal: FC<IBatchModalProps> = ({ appId, isShow, onCancel, onAdded }) => {
+  const { t } = useTranslation(['appAnnotation', 'common'])
+  const deploymentEdition = useAtomValue(deploymentEditionAtom)
+  const { data: annotationQuota } = useQuery(
+    consoleQuery.features.get.queryOptions({
+      enabled: deploymentEdition === 'CLOUD',
+      select: (data) => data.annotation_quota_limit,
+    }),
+  )
+  const isAnnotationQuotaUnavailable =
+    deploymentEdition === 'CLOUD' && annotationQuota === undefined
+  // A limit of 0 means unlimited.
+  const isAnnotationFull =
+    deploymentEdition === 'CLOUD' &&
+    annotationQuota !== undefined &&
+    annotationQuota.limit > 0 &&
+    annotationQuota.size >= annotationQuota.limit
+  const [currentCSV, setCurrentCSV] = useState<File>()
+  const handleFile = (file?: File) => setCurrentCSV(file)
+
+  useEffect(() => {
+    if (!isShow) setCurrentCSV(undefined)
+  }, [isShow])
+
+  const [importStatus, setImportStatus] = useState<ProcessStatus | string>()
+  const checkProcess = async (jobID: string) => {
+    try {
+      const res = await consoleClient.apps.byAppId.annotations.batchImportStatus.byJobId.get({
+        params: { app_id: appId, job_id: jobID },
+      })
+      setImportStatus(res.job_status)
+      if (res.job_status === ProcessStatus.WAITING || res.job_status === ProcessStatus.PROCESSING)
+        setTimeout(() => checkProcess(res.job_id), 2500)
+      if (res.job_status === ProcessStatus.ERROR)
+        toast.error(`${t(($) => $['batchModal.runError'], { ns: 'appAnnotation' })}`)
+      if (res.job_status === ProcessStatus.COMPLETED) {
+        toast.success(`${t(($) => $['batchModal.completed'], { ns: 'appAnnotation' })}`)
+        onAdded()
+        onCancel()
+      }
+    } catch (e: any) {
+      toast.error(
+        `${t(($) => $['batchModal.runError'], { ns: 'appAnnotation' })}${'message' in e ? `: ${e.message}` : ''}`,
+      )
+    }
+  }
+
+  const runBatch = async (csv: File) => {
+    const formData = new FormData()
+    formData.append('file', csv)
+    try {
+      const res = await annotationBatchImport(appId, formData)
+      setImportStatus(res.job_status)
+      checkProcess(res.job_id)
+    } catch (e: any) {
+      toast.error(
+        `${t(($) => $['batchModal.runError'], { ns: 'appAnnotation' })}${'message' in e ? `: ${e.message}` : ''}`,
+      )
+    }
+  }
+
+  const handleSend = () => {
+    if (!currentCSV) return
+    runBatch(currentCSV)
+  }
+
+  return (
+    <Dialog
+      open={isShow}
+      disablePointerDismissal
+      onOpenChange={(open) => {
+        if (!open) onCancel()
+      }}
+    >
+      <DialogContent className="w-130">
+        <DialogHeader>
+          <DialogTitle>{t(($) => $['batchModal.title'], { ns: 'appAnnotation' })}</DialogTitle>
+          <DialogHeaderCloseButton aria-label={t(($) => $['operation.close'], { ns: 'common' })} />
+        </DialogHeader>
+        <DialogBody>
+          <CSVUploader file={currentCSV} updateFile={handleFile} />
+          <CSVDownloader />
+
+          {isAnnotationFull && (
+            <div className="mt-4">
+              <AnnotationFull />
+            </div>
+          )}
+        </DialogBody>
+        <DialogFooter>
+          <Button className="system-sm-medium text-text-tertiary" onClick={onCancel}>
+            {t(($) => $['batchModal.cancel'], { ns: 'appAnnotation' })}
+          </Button>
+          <Button
+            variant="primary"
+            onClick={handleSend}
+            disabled={isAnnotationQuotaUnavailable || isAnnotationFull || !currentCSV}
+            loading={
+              importStatus === ProcessStatus.PROCESSING || importStatus === ProcessStatus.WAITING
+            }
+          >
+            {t(($) => $['batchModal.run'], { ns: 'appAnnotation' })}
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  )
+}
+export default React.memo(BatchModal)

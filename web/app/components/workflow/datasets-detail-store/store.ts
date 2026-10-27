@@ -1,0 +1,39 @@
+import type { DatasetDetailWithPartialMembersResponse } from '@dify/contracts/api/console/datasets/types.gen'
+import { produce } from 'immer'
+import { use } from 'react'
+import { createStore, useStore } from 'zustand'
+import { DatasetsDetailContext } from './provider'
+
+type DatasetsDetailStore = {
+  datasetsDetail: Record<string, DatasetDetailWithPartialMembersResponse>
+  updateDatasetsDetail: (datasetsDetail: DatasetDetailWithPartialMembersResponse[]) => void
+}
+
+export const createDatasetsDetailStore = () => {
+  return createStore<DatasetsDetailStore>((set, get) => ({
+    datasetsDetail: {},
+    updateDatasetsDetail: (datasets: DatasetDetailWithPartialMembersResponse[]) => {
+      const oldDatasetsDetail = get().datasetsDetail
+      const datasetsDetail = datasets.reduce<
+        Record<string, DatasetDetailWithPartialMembersResponse>
+      >((acc, dataset) => {
+        acc[dataset.id] = dataset
+        return acc
+      }, {})
+      // Merge new datasets detail into old one
+      const newDatasetsDetail = produce(oldDatasetsDetail, (draft) => {
+        Object.entries(datasetsDetail).forEach(([key, value]) => {
+          draft[key] = value
+        })
+      })
+      set({ datasetsDetail: newDatasetsDetail })
+    },
+  }))
+}
+
+export const useDatasetsDetailStore = <T>(selector: (state: DatasetsDetailStore) => T): T => {
+  const store = use(DatasetsDetailContext)
+  if (!store) throw new Error('Missing DatasetsDetailContext.Provider in the tree')
+
+  return useStore(store, selector)
+}

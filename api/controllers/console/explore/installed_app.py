@@ -1,0 +1,231 @@
+import base64
+import binascii
+import logging
+from http import HTTPStatus
+
+from flask_restx import Resource
+from pydantic import BaseModel, Field, computed_field
+
+from controllers.common.fields import SimpleResultMessageResponse
+from controllers.common.schema import query_params_from_model, register_response_schema_models, register_schema_models
+from controllers.console import console_ns
+from controllers.console.explore.error import (
+    InstalledAppInvalidCursorError,
+    InstalledAppNotFoundHTTPError,
+    InstalledAppUnavailableHTTPError,
+    WebAppAccessUnavailableHTTPError,
+)
+from controllers.console.explore.installed_app_admission import get_installed_app
+from controllers.console.flask_admission import console_account_admission
+from controllers.console.wraps import model_validate
+from extensions.ext_application_services import application_services
+from fields.base import ResponseModel
+from graphon.file import helpers as file_helpers
+from libs.external_api import error_responses
+from libs.helper import dump_response, to_timestamp
+from machinery.context import RequestContext
+from models.model import AppMode, IconType
+from services.installed_app_access_service import InstalledAppNotFoundError, InstalledAppRef
+from services.installed_app_service import (
+    InstalledAppCursor,
+    InstalledAppRecord,
+    InstalledAppUnavailableError,
+)
+from services.webapp_access_query_service import WebAppAccessUnavailableError
+
+
+class InstalledAppUpdatePayload(BaseModel):
+    is_pinned: bool | None = None
+
+
+class InstalledAppsListQuery(BaseModel):
+    app_id: str | None = Field(default=None, description="App ID to filter by")
+    name: str | None = Field(default=None, max_length=100, description="App name to search for")
+    cursor: str | None = Field(default=None, description="Opaque cursor returned by the previous page")
+    limit: int = Field(
+        default=20,
+        ge=1,
+        le=100,
+        description="Number of installed apps to return",
+    )
+
+
+logger = logging.getLogger(__name__)
+
+
+def _build_icon_url(icon_type: IconType | None, icon: str | None) -> str | None:
+    if icon is None or icon_type is None:
+        return None
+    if icon_type != IconType.IMAGE:
+        return None
+    return file_helpers.get_signed_file_url(icon)
+
+
+def _encode_installed_app_cursor(cursor: InstalledAppCursor) -> str:
+    payload = cursor.model_dump_json().encode()
+    return base64.urlsafe_b64encode(payload).decode().rstrip("=")
+
+
+def _decode_installed_app_cursor(cursor: str | None) -> InstalledAppCursor | None:
+    if cursor is None:
+        return None
+
+    try:
+        padded_cursor = cursor + "=" * (-len(cursor) % 4)
+        payload = base64.b64decode(padded_cursor, altchars=b"-_", validate=True)
+        return InstalledAppCursor.model_validate_json(payload)
+    except (binascii.Error, UnicodeDecodeError, ValueError) as error:
+        raise InstalledAppInvalidCursorError() from error
+
+
+class InstalledAppInfoResponse(ResponseModel):
+    id: str
+    name: str
+    description: str
+    mode: AppMode
+    icon_type: IconType | None
+    icon: str | None
+    icon_background: str | None
+    use_icon_as_answer_icon: bool
+
+    @computed_field(return_type=str | None)  # type: ignore[prop-decorator]
+    @property
+    def icon_url(self) -> str | None:
+        return _build_icon_url(self.icon_type, self.icon)
+
+
+class InstalledAppResponse(ResponseModel):
+    id: str
+    app: InstalledAppInfoResponse
+    app_owner_tenant_id: str
+    is_pinned: bool
+    last_used_at: int | None
+    editable: bool
+
+
+class InstalledAppListResponse(ResponseModel):
+    installed_apps: list[InstalledAppResponse]
+    has_more: bool
+    next_cursor: str | None
+
+
+def _installed_app_response_data(
+    installed_app: InstalledAppRecord,
+    *,
+    editable: bool,
+) -> InstalledAppResponse:
+    return InstalledAppResponse(
+        id=installed_app.id,
+        app=InstalledAppInfoResponse.model_validate(installed_app.app, from_attributes=True),
+        app_owner_tenant_id=installed_app.app_owner_tenant_id,
+        is_pinned=installed_app.is_pinned,
+        last_used_at=to_timestamp(installed_app.last_used_at),
+        editable=editable,
+    )
+
+
+register_schema_models(
+    console_ns,
+    InstalledAppUpdatePayload,
+    InstalledAppsListQuery,
+)
+register_response_schema_models(
+    console_ns,
+    InstalledAppInfoResponse,
+    InstalledAppResponse,
+    InstalledAppListResponse,
+    SimpleResultMessageResponse,
+)
+
+
+@console_ns.route("/installed-apps")
+class InstalledAppsListApi(Resource):
+    @error_responses(InstalledAppInvalidCursorError, WebAppAccessUnavailableHTTPError)
+    @console_ns.doc(params=query_params_from_model(InstalledAppsListQuery))
+    @console_ns.response(HTTPStatus.OK, "Success", console_ns.models[InstalledAppListResponse.__name__])
+    @console_account_admission()
+    @model_validate(InstalledAppsListQuery)
+    def get(self, query: InstalledAppsListQuery, request_context: RequestContext) -> dict[str, object]:
+        cursor = _decode_installed_app_cursor(query.cursor)
+        try:
+            page = application_services().installed_apps.management.get_visible_page(
+                tenant_id=request_context.active_workspace_id,
+                user_id=request_context.account_id,
+                cursor=cursor,
+                limit=query.limit,
+                app_id=query.app_id,
+                name=query.name,
+            )
+        except WebAppAccessUnavailableError as error:
+            logger.exception(
+                "Installed app list access check failed: workspace_id=%s account_id=%s request_id=%s",
+                request_context.active_workspace_id,
+                request_context.account_id,
+                request_context.request_id,
+            )
+            raise WebAppAccessUnavailableHTTPError() from error
+        installed_app_list = [
+            _installed_app_response_data(
+                installed_app,
+                editable=page.editable,
+            )
+            for installed_app in page.data
+        ]
+
+        logger.debug("installed_app_list: %s, user_id: %s", installed_app_list, request_context.account_id)
+        return dump_response(
+            InstalledAppListResponse,
+            {
+                "installed_apps": installed_app_list,
+                "has_more": page.has_more,
+                "next_cursor": _encode_installed_app_cursor(page.next_cursor) if page.next_cursor else None,
+            },
+        )
+
+
+@console_ns.route("/installed-apps/<uuid:installed_app_id>")
+class InstalledAppApi(Resource):
+    """Read or update an admitted workspace installation."""
+
+    @error_responses(InstalledAppNotFoundHTTPError, InstalledAppUnavailableHTTPError)
+    @console_ns.response(HTTPStatus.OK, "Success", console_ns.models[InstalledAppResponse.__name__])
+    @console_account_admission()
+    @get_installed_app
+    def get(
+        self,
+        request_context: RequestContext,
+        installed_app: InstalledAppRef,
+    ) -> dict[str, object]:
+        try:
+            detail = application_services().installed_apps.management.get_detail(
+                installed_app=installed_app, account_id=request_context.account_id
+            )
+        except InstalledAppUnavailableError as error:
+            raise InstalledAppUnavailableHTTPError() from error
+        except InstalledAppNotFoundError as error:
+            raise InstalledAppNotFoundHTTPError() from error
+        return dump_response(
+            InstalledAppResponse,
+            _installed_app_response_data(
+                detail.installation,
+                editable=detail.editable,
+            ),
+        )
+
+    @error_responses(InstalledAppNotFoundHTTPError)
+    @console_ns.response(HTTPStatus.OK, "Success", console_ns.models[SimpleResultMessageResponse.__name__])
+    @console_ns.expect(console_ns.models[InstalledAppUpdatePayload.__name__])
+    @console_account_admission()
+    @get_installed_app
+    @model_validate(InstalledAppUpdatePayload)
+    def patch(
+        self, req_data: InstalledAppUpdatePayload, request_context: RequestContext, installed_app: InstalledAppRef
+    ) -> dict[str, str]:
+        try:
+            application_services().installed_apps.management.set_pinned(
+                installed_app=installed_app, is_pinned=req_data.is_pinned
+            )
+        except InstalledAppNotFoundError as error:
+            raise InstalledAppNotFoundHTTPError() from error
+
+        return {"result": "success", "message": "App info updated successfully"}

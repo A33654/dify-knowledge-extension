@@ -1,0 +1,49 @@
+'use client'
+import type { AgentIterationLogResponse } from '@dify/contracts/api/console/apps/types.gen'
+import type { FC } from 'react'
+import { cn } from '@langgenius/dify-ui/cn'
+import { Separator } from '@langgenius/dify-ui/separator'
+import { useTranslation } from 'react-i18next'
+import ToolCall from './tool-call'
+
+type Props = Readonly<{
+  isFinal: boolean
+  index: number
+  iterationInfo: AgentIterationLogResponse
+}>
+
+const Iteration: FC<Props> = ({ iterationInfo, isFinal, index }) => {
+  const { t } = useTranslation(['appLog'])
+
+  return (
+    <div className={cn('px-4 py-2')}>
+      <div className="flex items-center">
+        {isFinal && (
+          <div className="mr-3 shrink-0 text-xs leading-4.5 font-semibold text-text-tertiary">
+            {t(($) => $['agentLogDetail.finalProcessing'], { ns: 'appLog' })}
+          </div>
+        )}
+        {!isFinal && (
+          <div className="mr-3 shrink-0 text-xs leading-4.5 font-semibold text-text-tertiary">{`${t(($) => $['agentLogDetail.iteration'], { ns: 'appLog' }).toUpperCase()} ${index}`}</div>
+        )}
+        <Separator decorative variant="gradient" className="mx-0 my-2 grow" />
+      </div>
+      <ToolCall
+        isLLM
+        isFinal={isFinal}
+        tokens={iterationInfo.tokens}
+        observation={iterationInfo.tool_raw.outputs}
+        finalAnswer={iterationInfo.thought}
+        toolCall={{
+          status: 'success',
+          tool_icon: null,
+        }}
+      />
+      {iterationInfo.tool_calls.map((toolCall, index) => (
+        <ToolCall isLLM={false} key={index} toolCall={toolCall} />
+      ))}
+    </div>
+  )
+}
+
+export default Iteration

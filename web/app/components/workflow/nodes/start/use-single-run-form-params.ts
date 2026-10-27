@@ -1,0 +1,80 @@
+import type { RefObject } from 'react'
+import type { StartNodeType } from './types'
+import type { Props as FormProps } from '@/app/components/workflow/nodes/_base/components/before-run-form/form'
+import type { InputVar, ValueSelector, Variable } from '@/app/components/workflow/types'
+import { useAtomValue } from 'jotai'
+import { useTranslation } from 'react-i18next'
+import { isChatflowAtom } from '@/app/components/workflow/editor-resource/state'
+import { InputVarType } from '@/app/components/workflow/types'
+
+type Params = {
+  id: string
+  payload: StartNodeType
+  runInputData: Record<string, any>
+  runInputDataRef: RefObject<Record<string, any>>
+  getInputVars: (textList: string[]) => InputVar[]
+  setRunInputData: (data: Record<string, any>) => void
+  toVarInputs: (variables: Variable[]) => InputVar[]
+}
+const useSingleRunFormParams = ({ id, payload, runInputData, setRunInputData }: Params) => {
+  const { t } = useTranslation(['workflowModels'])
+  const isChatflow = useAtomValue(isChatflowAtom)
+
+  const forms = (() => {
+    const forms: FormProps[] = []
+    const inputs: InputVar[] = payload.variables.map((item) => {
+      return {
+        ...item,
+        getVarValueFromDependent: true,
+      }
+    })
+
+    if (isChatflow) {
+      inputs.push({
+        label: 'sys.query',
+        variable: '#sys.query#',
+        type: InputVarType.textInput,
+        required: true,
+      })
+    }
+
+    inputs.push({
+      label: 'sys.files',
+      variable: '#sys.files#',
+      type: InputVarType.multiFiles,
+      required: false,
+    })
+
+    forms.push({
+      label: t(($) => $['nodes.llm.singleRun.variable'], { ns: 'workflowModels' })!,
+      inputs,
+      values: runInputData,
+      onChange: setRunInputData,
+    })
+
+    return forms
+  })()
+
+  const getDependentVars = () => {
+    const inputVars = payload.variables.map((item) => {
+      return [id, item.variable]
+    })
+    const vars: ValueSelector[] = [...inputVars, ['sys', 'files']]
+
+    if (isChatflow) vars.push(['sys', 'query'])
+
+    return vars
+  }
+
+  const getDependentVar = (variable: string) => {
+    return [id, variable]
+  }
+
+  return {
+    forms,
+    getDependentVars,
+    getDependentVar,
+  }
+}
+
+export default useSingleRunFormParams

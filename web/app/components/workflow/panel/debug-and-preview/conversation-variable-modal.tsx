@@ -1,0 +1,199 @@
+'use client'
+
+import type { ConversationVariable } from '@/app/components/workflow/types'
+import { cn } from '@langgenius/dify-ui/cn'
+import { Dialog, DialogContent } from '@langgenius/dify-ui/dialog'
+import { IconButton } from '@langgenius/dify-ui/icon-button'
+import { RiCloseLine } from '@remixicon/react'
+import { skipToken, useQuery } from '@tanstack/react-query'
+import copy from 'copy-to-clipboard'
+import { capitalize } from 'es-toolkit/string'
+import { useAtomValue } from 'jotai'
+import * as React from 'react'
+import { useCallback, useEffect, useRef } from 'react'
+import { useTranslation } from 'react-i18next'
+import { editorAppIdAtom } from '@/app/components/workflow/editor-resource/state'
+import CodeEditor from '@/app/components/workflow/nodes/_base/components/editor/code-editor'
+import { CodeLanguage } from '@/app/components/workflow/nodes/code/types'
+import { ChatVarType } from '@/app/components/workflow/panel/chat-variable-panel/type'
+import { useStore } from '@/app/components/workflow/store'
+import useTimestamp from '@/hooks/use-timestamp'
+import { consoleQuery } from '@/service/console'
+
+type Props = Readonly<{
+  conversationID: string
+  onHide: () => void
+}>
+
+const ConversationVariableModal = ({ conversationID, onHide }: Props) => {
+  const { t } = useTranslation(['appLog', 'common', 'workflow'])
+  const { formatTime } = useTimestamp()
+  const varList = useStore((s) => s.conversationVariables) as ConversationVariable[]
+  const appID = useAtomValue(editorAppIdAtom)
+  const [currentVar, setCurrentVar] = React.useState<ConversationVariable>(varList[0]!)
+  const { data: latestValues } = useQuery(
+    consoleQuery.apps.byAppId.conversationVariables.get.queryOptions({
+      input:
+        appID && conversationID
+          ? { params: { app_id: appID }, query: { conversation_id: conversationID } }
+          : skipToken,
+      enabled: varList.length > 0,
+      staleTime: 0,
+    }),
+  )
+  const latestVariable = latestValues?.data.find((variable) => variable.id === currentVar.id)
+  const currentValue = latestVariable?.value ?? currentVar.value
+  const updatedAt = latestVariable?.updated_at
+  const copyResetTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined)
+  useEffect(() => () => clearTimeout(copyResetTimer.current), [])
+  const [isCopied, setIsCopied] = React.useState(false)
+  const handleCopy = useCallback(() => {
+    copy(currentValue)
+    setIsCopied(true)
+    clearTimeout(copyResetTimer.current)
+    copyResetTimer.current = setTimeout(() => {
+      setIsCopied(false)
+    }, 2000)
+  }, [currentValue])
+
+  return (
+    <Dialog open>
+      <DialogContent className="h-[min(640px,calc(100dvh-2rem))] w-230 overflow-hidden">
+        <button
+          type="button"
+          aria-label={t(($) => $['operation.close'], { ns: 'common' })}
+          className="absolute top-4 right-4 cursor-pointer border-none bg-transparent p-2 focus-visible:ring-1 focus-visible:ring-components-input-border-active focus-visible:outline-hidden"
+          onClick={onHide}
+        >
+          <RiCloseLine className="size-4 text-text-tertiary" aria-hidden="true" />
+        </button>
+        <div className="flex size-full">
+          {/* LEFT */}
+          <div className="flex h-full w-56 shrink-0 flex-col border-r border-divider-burn bg-background-sidenav-bg">
+            <div className="shrink-0 pt-5 pr-4 pb-3 pl-5 system-xl-semibold text-text-primary">
+              {t(($) => $['chatVariable.panelTitle'], { ns: 'workflow' })}
+            </div>
+            <div className="grow overflow-y-auto px-3 py-2">
+              {varList.map((chatVar) => (
+                <button
+                  key={chatVar.id}
+                  type="button"
+                  className={cn(
+                    'group mb-0.5 flex w-full cursor-pointer items-center rounded-lg border-none bg-transparent p-2 text-left hover:bg-state-base-hover focus-visible:ring-1 focus-visible:ring-components-input-border-active focus-visible:outline-hidden',
+                    currentVar.id === chatVar.id && 'bg-state-base-hover',
+                  )}
+                  onClick={() => {
+                    clearTimeout(copyResetTimer.current)
+                    setIsCopied(false)
+                    setCurrentVar(chatVar)
+                  }}
+                >
+                  <span
+                    aria-hidden="true"
+                    className={cn(
+                      'i-custom-vender-line-others-bubble-x h-4 w-4',
+                      cn(
+                        'mr-1 size-4 shrink-0 text-text-tertiary group-hover:text-util-colors-teal-teal-700',
+                        currentVar.id === chatVar.id && 'text-util-colors-teal-teal-700',
+                      ),
+                    )}
+                  />
+                  <div
+                    title={chatVar.name}
+                    className={cn(
+                      'truncate system-sm-medium text-text-tertiary group-hover:text-util-colors-teal-teal-700',
+                      currentVar.id === chatVar.id && 'text-util-colors-teal-teal-700',
+                    )}
+                  >
+                    {chatVar.name}
+                  </div>
+                </button>
+              ))}
+            </div>
+          </div>
+          {/* RIGHT */}
+          <div className="flex h-full w-0 grow flex-col bg-components-panel-bg">
+            <div className="shrink-0 p-4 pb-2">
+              <div className="flex items-center gap-1 py-1">
+                <div className="system-xl-semibold text-text-primary">{currentVar.name}</div>
+                <div className="system-xs-medium text-text-tertiary">
+                  {capitalize(currentVar.value_type)}
+                </div>
+              </div>
+            </div>
+            <div className="flex h-0 grow flex-col p-4 pt-2">
+              <div className="mb-2 flex shrink-0 items-center gap-2">
+                <div className="shrink-0 system-xs-medium-uppercase text-text-tertiary">
+                  {t(($) => $['chatVariable.storedContent'], {
+                    ns: 'workflow',
+                  }).toLocaleUpperCase()}
+                </div>
+                <div
+                  className="h-px grow"
+                  style={{
+                    background:
+                      'linear-gradient(to right, rgba(16, 24, 40, 0.08) 0%, rgba(255, 255, 255) 100%)',
+                  }}
+                ></div>
+                {!!updatedAt && (
+                  <div className="shrink-0 system-xs-regular text-text-tertiary">
+                    {t(($) => $['chatVariable.updatedAt'], { ns: 'workflow' })}
+                    {formatTime(updatedAt!, t(($) => $.dateTimeFormat, { ns: 'appLog' }) as string)}
+                  </div>
+                )}
+              </div>
+              <div className="grow overflow-y-auto">
+                {currentVar.value_type !== ChatVarType.Number &&
+                  currentVar.value_type !== ChatVarType.String && (
+                    <div className="flex h-full flex-col rounded-lg bg-components-input-bg-normal px-2 pb-2">
+                      <div className="flex h-7 shrink-0 items-center justify-between pt-1 pr-2 pl-3">
+                        <div className="system-xs-semibold text-text-secondary">JSON</div>
+                        <div className="flex items-center p-1">
+                          <IconButton
+                            aria-label={t(($) => $['operation.copy'], { ns: 'common' })}
+                            aria-disabled={isCopied}
+                            size="xs"
+                            onClick={() => {
+                              if (!isCopied) handleCopy()
+                            }}
+                          >
+                            <span
+                              aria-hidden
+                              className={cn(
+                                'size-4',
+                                isCopied
+                                  ? 'i-custom-vender-line-files-copy-check'
+                                  : 'i-custom-vender-line-files-copy',
+                              )}
+                            />
+                          </IconButton>
+                        </div>
+                      </div>
+                      <div className="grow pl-4">
+                        <CodeEditor
+                          readOnly
+                          noWrapper
+                          isExpand
+                          language={CodeLanguage.json}
+                          value={currentValue}
+                          isJSONStringifyBeauty
+                        />
+                      </div>
+                    </div>
+                  )}
+                {(currentVar.value_type === ChatVarType.Number ||
+                  currentVar.value_type === ChatVarType.String) && (
+                  <div className="h-full overflow-x-hidden overflow-y-auto rounded-lg bg-components-input-bg-normal px-4 py-3 system-md-regular text-components-input-text-filled">
+                    {currentValue}
+                  </div>
+                )}
+              </div>
+            </div>
+          </div>
+        </div>
+      </DialogContent>
+    </Dialog>
+  )
+}
+
+export default ConversationVariableModal

@@ -1,0 +1,85 @@
+'use client'
+import type { FC } from 'react'
+import type { Memory, Node, NodeOutPutVar } from '@/app/components/workflow/types'
+import { Infotip, InfotipContent, InfotipTrigger } from '@langgenius/dify-ui/infotip'
+import * as React from 'react'
+import { useTranslation } from 'react-i18next'
+import Editor from '@/app/components/workflow/nodes/_base/components/prompt/editor'
+import MemoryConfig from '../../_base/components/memory-config'
+
+const i18nPrefix = 'nodes.questionClassifiers'
+
+type Props = Readonly<{
+  instruction: string
+  onInstructionChange: (instruction: string) => void
+  hideMemorySetting: boolean
+  memory?: Memory
+  onMemoryChange: (memory?: Memory) => void
+  readonly?: boolean
+  isChatModel: boolean
+  isChatApp: boolean
+  hasSetBlockStatus?: {
+    context: boolean
+    history: boolean
+    query: boolean
+  }
+  nodesOutputVars: NodeOutPutVar[]
+  availableNodes: Node[]
+}>
+
+const AdvancedSetting: FC<Props> = ({
+  instruction,
+  onInstructionChange,
+  hideMemorySetting,
+  memory,
+  onMemoryChange,
+  readonly,
+  isChatModel,
+  isChatApp,
+  hasSetBlockStatus,
+  nodesOutputVars,
+  availableNodes,
+}) => {
+  const instructionLabelId = React.useId()
+
+  const { t } = useTranslation(['workflowModels'])
+
+  return (
+    <>
+      <Editor
+        title={
+          <div className="flex items-center space-x-1">
+            <span id={instructionLabelId} className="uppercase">
+              {t(($) => $[`${i18nPrefix}.instruction`], { ns: 'workflowModels' })}
+            </span>
+            <Infotip>
+              <InfotipTrigger aria-labelledby={instructionLabelId} className="ml-0.5 size-3.5" />
+              <InfotipContent aria-labelledby={instructionLabelId} className="w-30">
+                {t(($) => $[`${i18nPrefix}.instructionTip`], { ns: 'workflowModels' })}
+              </InfotipContent>
+            </Infotip>
+          </div>
+        }
+        value={instruction}
+        onChange={onInstructionChange}
+        readOnly={readonly}
+        isChatModel={isChatModel}
+        isChatApp={isChatApp}
+        isShowContext={false}
+        hasSetBlockStatus={hasSetBlockStatus}
+        nodesOutputVars={nodesOutputVars}
+        availableNodes={availableNodes}
+      />
+      {!hideMemorySetting && (
+        <MemoryConfig
+          className="mt-4"
+          readonly={!!readonly}
+          config={{ data: memory }}
+          onChange={onMemoryChange}
+          canSetRoleName={false}
+        />
+      )}
+    </>
+  )
+}
+export default React.memo(AdvancedSetting)

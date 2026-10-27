@@ -1,0 +1,183 @@
+import type { KnowledgeFsCitation } from '@dify/contracts/api/console/agent/types.gen'
+import type { FileEntity } from '@/app/components/base/file-uploader/types'
+import type { TypeWithI18N } from '@/app/components/header/account-setting/model-provider-page/declarations'
+import type { InputVarType } from '@/app/components/workflow/types'
+import type { Annotation, MessageRating } from '@/models/log'
+import type { FileResponse, HumanInputFilledFormData, HumanInputFormData } from '@/types/workflow'
+
+type MessageMore = {
+  time: string
+  tokens: number
+  latency: number | string
+  tokens_per_second?: number | string
+}
+
+export type FeedbackType = {
+  rating: MessageRating
+  content?: string | null
+}
+
+export type FeedbackFunc = (messageId: string, feedback: FeedbackType) => Promise<void>
+
+export type ToolInfoInThought = {
+  name: string
+  label: string
+  input: string
+  output: string
+  isFinished: boolean
+}
+
+export type ThoughtItem = {
+  task_id?: string
+  id: string
+  tool: string // plugin or dataset. May has multi.
+  thought: string
+  answer?: string
+  tool_input: string
+  tool_labels?: { [key: string]: TypeWithI18N }
+  message_id: string
+  conversation_id: string
+  observation: string
+  position: number
+  files?: string[]
+  message_files?: FileEntity[]
+}
+
+type AgentResponsePart =
+  | {
+      type: 'thought'
+      thought: ThoughtItem
+    }
+  | {
+      type: 'message'
+      content: string
+    }
+
+export type CitationItem = {
+  knowledge_fs_citation?: KnowledgeFsCitation | null
+  content: string
+  data_source_type: string
+  dataset_name: string
+  dataset_id: string
+  document_asset_id?: string | null
+  document_id: string
+  document_name: string
+  document_revision?: number | null
+  document_version?: number | null
+  hit_count: number
+  index_node_hash: string
+  segment_id: string
+  segment_position: number
+  score: number
+  word_count: number
+  version_id?: string | null
+  version_no?: number | null
+}
+
+type PendingHumanInputExtraContent = {
+  type: 'human_input'
+  submitted: false
+  form_definition: HumanInputFormData
+  workflow_run_id: string
+}
+
+type SubmittedHumanInputExtraContent = {
+  type: 'human_input'
+  submitted: true
+  form_definition?: HumanInputFormData
+  form_submission_data: Omit<HumanInputFilledFormData, 'form_id'>
+  workflow_run_id?: string
+}
+
+export type ExtraContent = PendingHumanInputExtraContent | SubmittedHumanInputExtraContent
+
+export type IChatItem = {
+  isError?: boolean
+  id: string
+  content: string
+  citation?: CitationItem[]
+  /**
+   * Specific message type
+   */
+  isAnswer: boolean
+  /**
+   * The user feedback result of this message
+   */
+  feedback?: FeedbackType
+  /**
+   * The admin feedback result of this message
+   */
+  adminFeedback?: FeedbackType
+  /**
+   * Whether to hide the feedback area
+   */
+  feedbackDisabled?: boolean
+  /**
+   * More information about this message
+   */
+  more?: MessageMore
+  annotation?: Annotation
+  useCurrentUserAvatar?: boolean
+  isOpeningStatement?: boolean
+  suggestedQuestions?: string[]
+  log?: { role: string; text: string; files?: FileEntity[] }[]
+  agent_thoughts?: ThoughtItem[]
+  agent_response_parts?: AgentResponsePart[]
+  // for LLM reasoning (chain-of-thought) in "separated" mode, keyed by LLM node id
+  reasoningContent?: Record<string, string>
+  reasoningFinished?: boolean
+  message_files?: FileEntity[]
+  workflow_run_id?: string
+  // for agent log
+  conversationId?: string
+  input?: any
+  parentMessageId?: string | null
+  siblingCount?: number
+  siblingIndex?: number
+  prevSibling?: string
+  nextSibling?: string
+  // for human input
+  humanInputFormDataList?: HumanInputFormData[]
+  humanInputFilledFormDataList?: HumanInputFilledFormData[]
+  extra_contents?: ExtraContent[]
+}
+
+export type SegmentReferenceInfo = {
+  version_id?: string | null
+  version_no?: number | null
+}
+
+export type Metadata = {
+  retriever_resources?: CitationItem[]
+  reference_info?: Record<string, SegmentReferenceInfo>
+  annotation_reply: {
+    id: string
+    account: {
+      id: string
+      name: string
+    }
+  }
+}
+
+export type MessageEnd = {
+  id: string
+  conversation_id: string
+  metadata: Metadata
+  files?: FileResponse[]
+}
+
+export type MessageReplace = {
+  id: string
+  task_id: string
+  answer: string
+  conversation_id: string
+}
+
+export type InputForm = {
+  type: InputVarType
+  label: string
+  variable: any
+  required: boolean
+  hide: boolean
+  [key: string]: any
+}

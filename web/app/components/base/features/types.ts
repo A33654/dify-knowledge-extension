@@ -1,0 +1,106 @@
+import type { AppModelSelectionResponse } from '@dify/contracts/api/console/apps/types.gen'
+import type { UploadConfig } from '@dify/contracts/api/console/files/types.gen'
+import type { Resolution, TransferMethod, TtsAutoPlay } from '@/types/app'
+
+type EnabledOrDisabled = {
+  enabled?: boolean
+}
+
+export type OpeningStatement = EnabledOrDisabled & {
+  opening_statement?: string
+  suggested_questions?: string[]
+}
+
+export type SuggestedQuestionsAfterAnswer = EnabledOrDisabled & {
+  model?: AppModelSelectionResponse
+  prompt?: string
+}
+
+type TextToSpeech = EnabledOrDisabled & {
+  language?: string
+  voice?: string
+  autoPlay?: TtsAutoPlay
+}
+
+type SensitiveWordAvoidance = EnabledOrDisabled & {
+  type?: string
+  config?: any
+}
+
+export const PreviewMode = {
+  NewPage: 'new_page',
+  CurrentPage: 'current_page',
+} as const
+
+export type PreviewMode = (typeof PreviewMode)[keyof typeof PreviewMode]
+
+export type FileUpload = {
+  image?: EnabledOrDisabled & {
+    detail?: Resolution
+    number_limits?: number
+    transfer_methods?: TransferMethod[]
+  }
+  document?: EnabledOrDisabled & {
+    number_limits?: number
+    transfer_methods?: TransferMethod[]
+  }
+  audio?: EnabledOrDisabled & {
+    number_limits?: number
+    transfer_methods?: TransferMethod[]
+  }
+  video?: EnabledOrDisabled & {
+    number_limits?: number
+    transfer_methods?: TransferMethod[]
+  }
+  custom?: EnabledOrDisabled & {
+    number_limits?: number
+    transfer_methods?: TransferMethod[]
+  }
+  allowed_file_types?: string[]
+  allowed_file_extensions?: string[]
+  allowed_file_upload_methods?: TransferMethod[]
+  number_limits?: number
+  fileUploadConfig?: UploadConfig
+  preview_config?: {
+    mode?: PreviewMode
+    file_type_list?: string[]
+  }
+} & EnabledOrDisabled
+
+type AnnotationReplyConfig = {
+  enabled: boolean
+  id?: string
+  score_threshold?: number
+  embedding_model?: {
+    embedding_provider_name: string
+    embedding_model_name: string
+  }
+}
+
+export const FeatureEnum = {
+  moreLikeThis: 'moreLikeThis',
+  opening: 'opening',
+  suggested: 'suggested',
+  text2speech: 'text2speech',
+  speech2text: 'speech2text',
+  citation: 'citation',
+  moderation: 'moderation',
+  file: 'file',
+  annotationReply: 'annotationReply',
+} as const
+
+export type FeatureEnum = (typeof FeatureEnum)[keyof typeof FeatureEnum]
+
+export type Features = {
+  [FeatureEnum.moreLikeThis]?: EnabledOrDisabled
+  [FeatureEnum.opening]?: OpeningStatement
+  [FeatureEnum.suggested]?: SuggestedQuestionsAfterAnswer
+  [FeatureEnum.text2speech]?: TextToSpeech
+  [FeatureEnum.speech2text]?: EnabledOrDisabled
+  [FeatureEnum.citation]?: EnabledOrDisabled
+  [FeatureEnum.moderation]?: SensitiveWordAvoidance
+  [FeatureEnum.file]?: FileUpload
+  [FeatureEnum.annotationReply]?: AnnotationReplyConfig
+}
+
+export type OnFeaturesChange = (features?: Features) => void

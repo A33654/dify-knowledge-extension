@@ -1,0 +1,104 @@
+import logging
+import time
+
+import click
+from celery import shared_task
+from sqlalchemy import select, update
+
+from core.db.session_factory import session_factory
+from core.rag.index_processor.index_processor import IndexProcessorFactory
+from extensions.ext_redis import redis_client
+from libs.datetime_utils import naive_utc_now
+from models.dataset import Document, DocumentSegment
+from models.enums import IndexingStatus
+from repositories.knowledge.dataset_read_repository import get_document_dataset
+
+logger = logging.getLogger(__name__)
+
+
+@shared_task(queue="dataset")
+def remove_document_from_index_task(document_id: str):
+    """
+    Async Remove document from index
+    :param document_id: document id
+
+    Usage: remove_document_from_index.delay(document_id)
+    """
+    logger.info(click.style(f"Start remove document segments from index: {document_id}", fg="green"))
+    start_at = time.perf_counter()
+
+    with session_factory.create_session() as session:
+        document = session.scalar(select(Document).where(Document.id == document_id).limit(1))
+        if not document:
+            logger.info(click.style(f"Document not found: {document_id}", fg="red"))
+            return
+
+        if document.indexing_status != IndexingStatus.COMPLETED:
+            logger.info(click.style(f"Document is not completed, remove is not allowed: {document_id}", fg="red"))
+            return
+
+        indexing_cache_key = f"document_{document.id}_indexing"
+
+        try:
+            dataset = get_document_dataset(document, session=session)
+
+            if not dataset:
+                raise Exception("Document has no dataset")
+
+            index_processor = IndexProcessorFactory(document.doc_form).init_index_processor()
+
+            segments = session.scalars(select(DocumentSegment).where(DocumentSegment.document_id == document.id)).all()
+
+            # Disable summary indexes for all segments in this document
+            from services.knowledge.summaries.adapters import SummaryIndexAdapter
+
+            segment_ids_list = [segment.id for segment in segments]
+            if segment_ids_list:
+                try:
+                    SummaryIndexAdapter.disable_summaries_for_segments(
+                        dataset=dataset,
+                        segment_ids=segment_ids_list,
+                        disabled_by=document.disabled_by,
+                    )
+                except Exception:
+                    logger.warning("Failed to disable summaries for document %s", document.id, exc_info=True)
+
+            index_node_ids = [segment.index_node_id for segment in segments if segment.index_node_id]
+            if index_node_ids:
+                try:
+                    index_processor.clean(
+                        dataset,
+                        index_node_ids,
+                        with_keywords=True,
+                        delete_child_chunks=False,
+                        session=session,
+                    )
+                except Exception:
+                    logger.exception("clean dataset %s from index failed", dataset.id)
+            # update segment to disable
+            session.execute(
+                update(DocumentSegment)
+                .where(DocumentSegment.document_id == document.id)
+                .values(
+                    enabled=False,
+                    disabled_at=naive_utc_now(),
+                    disabled_by=document.disabled_by,
+                    updated_at=naive_utc_now(),
+                )
+            )
+            session.commit()
+
+            end_at = time.perf_counter()
+            logger.info(
+                click.style(
+                    f"Document removed from index: {document.id} latency: {end_at - start_at}",
+                    fg="green",
+                )
+            )
+        except Exception:
+            logger.exception("remove document from index failed")
+            if not document.archived:
+                document.enabled = True
+                session.commit()
+        finally:
+            redis_client.delete(indexing_cache_key)

@@ -1,0 +1,204 @@
+import type { Ref } from 'react'
+import type { ConversationItem } from '@/models/share'
+import {
+  AlertDialog,
+  AlertDialogCancelButton,
+  AlertDialogConfirmButton,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from '@langgenius/dify-ui/alert-dialog'
+import { cn } from '@langgenius/dify-ui/cn'
+import { IconButton } from '@langgenius/dify-ui/icon-button'
+import { Tooltip, TooltipContent, TooltipTrigger } from '@langgenius/dify-ui/tooltip'
+import { RiEditBoxLine, RiLayoutRight2Line, RiResetLeftLine } from '@remixicon/react'
+import { useCallback, useState } from 'react'
+import { useTranslation } from 'react-i18next'
+import AppIcon from '@/app/components/base/app-icon'
+import ViewFormDropdown from '@/app/components/base/chat/chat-with-history/inputs-form/view-form-dropdown'
+import RenameModal from '@/app/components/base/chat/chat-with-history/sidebar/rename-modal'
+import { useChatWithHistoryContext } from '../context'
+import Operation from './operation'
+
+const Header = ({ toggleButtonRef }: { toggleButtonRef?: Ref<HTMLButtonElement> }) => {
+  const {
+    appData,
+    currentConversationId,
+    currentConversationItem,
+    inputsForms,
+    pinnedConversationList,
+    handlePinConversation,
+    handleUnpinConversation,
+    conversationRenaming,
+    handleRenameConversation,
+    handleDeleteConversation,
+    handleNewConversation,
+    sidebarCollapseState,
+    handleSidebarCollapse,
+    isResponding,
+  } = useChatWithHistoryContext()
+  const { t } = useTranslation(['common', 'layout', 'share'])
+  const isSidebarCollapsed = sidebarCollapseState
+
+  const isPin = pinnedConversationList.some((item) => item.id === currentConversationId)
+
+  const [showConfirm, setShowConfirm] = useState<ConversationItem | null>(null)
+  const [showRename, setShowRename] = useState<ConversationItem | null>(null)
+  const handleOperate = useCallback(
+    (type: string) => {
+      if (type === 'pin') handlePinConversation(currentConversationId)
+
+      if (type === 'unpin') handleUnpinConversation(currentConversationId)
+
+      if (type === 'delete') setShowConfirm(currentConversationItem as any)
+
+      if (type === 'rename') setShowRename(currentConversationItem as any)
+    },
+    [
+      currentConversationId,
+      currentConversationItem,
+      handlePinConversation,
+      handleUnpinConversation,
+    ],
+  )
+  const handleCancelConfirm = useCallback(() => {
+    setShowConfirm(null)
+  }, [])
+  const handleDelete = useCallback(() => {
+    /* v8 ignore next -- defensive guard; onConfirm is only reachable when showConfirm is truthy. @preserve */
+    if (showConfirm) handleDeleteConversation(showConfirm.id, { onSuccess: handleCancelConfirm })
+  }, [showConfirm, handleDeleteConversation, handleCancelConfirm])
+  const handleCancelRename = useCallback(() => {
+    setShowRename(null)
+  }, [])
+  const handleRename = useCallback(
+    (newName: string) => {
+      /* v8 ignore next -- defensive guard; onSave is only reachable when showRename is truthy. @preserve */
+      if (showRename)
+        handleRenameConversation(showRename.id, newName, { onSuccess: handleCancelRename })
+    },
+    [showRename, handleRenameConversation, handleCancelRename],
+  )
+
+  return (
+    <>
+      <div className="flex h-14 shrink-0 items-center justify-between p-3">
+        <div
+          inert={!isSidebarCollapsed}
+          aria-hidden={!isSidebarCollapsed}
+          className={cn(
+            'flex items-center gap-1 transition-all duration-200 ease-in-out',
+            !isSidebarCollapsed && 'opacity-0',
+          )}
+        >
+          <IconButton
+            ref={toggleButtonRef}
+            aria-label={t(($) => $['sidebar.expandSidebar'], { ns: 'layout' })}
+            className={cn(!isSidebarCollapsed && 'cursor-default')}
+            size="lg"
+            onClick={() => handleSidebarCollapse(false)}
+          >
+            <RiLayoutRight2Line aria-hidden="true" className="h-4.5 w-4.5" />
+          </IconButton>
+          <div className="mr-1 shrink-0">
+            <AppIcon size="large" icon={appData?.site} />
+          </div>
+          {!currentConversationId && (
+            <div className={cn('grow truncate system-md-semibold text-text-secondary')}>
+              {appData?.site.title}
+            </div>
+          )}
+          {currentConversationId && currentConversationItem && isSidebarCollapsed && (
+            <>
+              <div className="p-1 text-divider-deep">/</div>
+              <Operation
+                title={currentConversationItem?.name || ''}
+                isPinned={!!isPin}
+                togglePin={() => handleOperate(isPin ? 'unpin' : 'pin')}
+                isShowDelete
+                isShowRenameConversation
+                onRenameConversation={() => handleOperate('rename')}
+                onDelete={() => handleOperate('delete')}
+              />
+            </>
+          )}
+          <div className="flex items-center px-1">
+            <div className="h-3.5 w-px bg-divider-regular"></div>
+          </div>
+          {isSidebarCollapsed && (
+            <Tooltip>
+              <TooltipTrigger
+                disabled={!!currentConversationId}
+                render={
+                  <div>
+                    <IconButton
+                      aria-label={t(($) => $['chat.newChatTip'], { ns: 'share' })}
+                      size="lg"
+                      disabled={!currentConversationId || isResponding}
+                      onClick={handleNewConversation}
+                    >
+                      <RiEditBoxLine aria-hidden="true" className="h-4.5 w-4.5" />
+                    </IconButton>
+                  </div>
+                }
+              />
+              <TooltipContent>{t(($) => $['chat.newChatTip'], { ns: 'share' })}</TooltipContent>
+            </Tooltip>
+          )}
+        </div>
+        <div className="flex items-center gap-1">
+          {currentConversationId && (
+            <Tooltip>
+              <TooltipTrigger
+                render={
+                  <IconButton
+                    aria-label={t(($) => $['chat.resetChat'], { ns: 'share' })}
+                    size="lg"
+                    onClick={handleNewConversation}
+                  >
+                    <RiResetLeftLine aria-hidden="true" className="h-4.5 w-4.5" />
+                  </IconButton>
+                }
+              />
+              <TooltipContent>{t(($) => $['chat.resetChat'], { ns: 'share' })}</TooltipContent>
+            </Tooltip>
+          )}
+          {currentConversationId && inputsForms.length > 0 && <ViewFormDropdown />}
+        </div>
+      </div>
+      <AlertDialog open={!!showConfirm} onOpenChange={(open) => !open && handleCancelConfirm()}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>
+              {t(($) => $['chat.deleteConversation.title'], { ns: 'share' })}
+            </AlertDialogTitle>
+            <AlertDialogDescription>
+              {t(($) => $['chat.deleteConversation.content'], { ns: 'share' }) || ''}
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancelButton>
+              {t(($) => $['operation.cancel'], { ns: 'common' })}
+            </AlertDialogCancelButton>
+            <AlertDialogConfirmButton onClick={handleDelete}>
+              {t(($) => $['operation.confirm'], { ns: 'common' })}
+            </AlertDialogConfirmButton>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+      {showRename && (
+        <RenameModal
+          isShow
+          onClose={handleCancelRename}
+          saveLoading={conversationRenaming}
+          name={showRename?.name || ''}
+          onSave={handleRename}
+        />
+      )}
+    </>
+  )
+}
+
+export default Header

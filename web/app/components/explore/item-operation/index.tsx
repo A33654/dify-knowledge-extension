@@ -1,0 +1,82 @@
+'use client'
+import { cn } from '@langgenius/dify-ui/cn'
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from '@langgenius/dify-ui/dropdown-menu'
+import * as React from 'react'
+import { useTranslation } from 'react-i18next'
+import s from './style.module.css'
+
+type IItemOperationProps = {
+  className?: string
+  itemName: string
+  isPinned: boolean
+  isShowRenameConversation?: boolean
+  onRenameConversation?: () => void
+  togglePin: () => void
+}
+
+function ItemOperation({
+  className,
+  itemName,
+  isPinned,
+  togglePin,
+  isShowRenameConversation,
+  onRenameConversation,
+}: IItemOperationProps) {
+  const { t } = useTranslation(['explore'])
+  const { t: tCommon } = useTranslation(['common'])
+
+  return (
+    <DropdownMenu modal={false}>
+      <DropdownMenuTrigger
+        aria-label={tCommon(($) => $['operation.moreActionsFor'], { name: itemName })}
+        className={cn(
+          'group/operation flex size-6 items-center justify-center rounded-md border-none p-0 text-text-tertiary transition-colors group-focus-within:bg-components-actionbar-bg! group-hover:bg-components-actionbar-bg! hover:bg-state-base-hover focus-visible:bg-state-base-hover data-popup-open:bg-components-actionbar-bg! data-popup-open:shadow-none!',
+          className,
+        )}
+        onClick={(e) => {
+          e.stopPropagation()
+        }}
+      >
+        <span
+          aria-hidden
+          className="i-ri-more-fill size-4 opacity-0 transition-opacity group-focus-within:opacity-100 group-hover:opacity-100 group-focus-visible/operation:opacity-100 group-data-popup-open/operation:opacity-100"
+        />
+      </DropdownMenuTrigger>
+      <DropdownMenuContent className="min-w-30">
+        <DropdownMenuItem
+          className={cn(s.actionItem, 'gap-2 px-3')}
+          onClick={(e) => {
+            e.stopPropagation()
+            togglePin()
+          }}
+        >
+          <span
+            aria-hidden
+            className="i-custom-vender-line-general-pin-02 size-4 shrink-0 text-text-secondary"
+          />
+          <span className={s.actionName}>
+            {isPinned ? t(($) => $['sidebar.action.unpin']) : t(($) => $['sidebar.action.pin'])}
+          </span>
+        </DropdownMenuItem>
+        {isShowRenameConversation && (
+          <DropdownMenuItem
+            className={cn(s.actionItem, 'gap-2 px-3')}
+            onClick={(e) => {
+              e.stopPropagation()
+              onRenameConversation?.()
+            }}
+          >
+            <span aria-hidden className="i-ri-edit-line size-4 shrink-0 text-text-secondary" />
+            <span className={s.actionName}>{t(($) => $['sidebar.action.rename'])}</span>
+          </DropdownMenuItem>
+        )}
+      </DropdownMenuContent>
+    </DropdownMenu>
+  )
+}
+export default React.memo(ItemOperation)

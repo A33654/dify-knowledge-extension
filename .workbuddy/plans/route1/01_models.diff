@@ -1,0 +1,43 @@
+# 交付物 2：模型变更
+# 目标文件：
+#   api/models/enums.py
+#   api/models/dataset.py
+# 说明：枚举新增 dead_letter 不需要 DDL（models/types.py:174 EnumText.impl = VARCHAR，列宽 32）
+
+--- a/api/models/enums.py
++++ b/api/models/enums.py
+@@
+ class DocumentAsyncTaskStatus(StrEnum):
+     """Asynchronous document upload task status."""
+
+     PENDING = "pending"
+     PROCESSING = "processing"
+     SUCCESS = "success"
+-    FAILED = "failed"
++    # A failed attempt that still owns retry budget. `next_attempt_at` carries
++    # the scheduled retry time, so this state is NOT terminal.
++    FAILED = "failed"
++    # Terminal: the retry budget is exhausted and no automatic retry is
++    # scheduled. Only a manual retry may move the row out of this state.
++    DEAD_LETTER = "dead_letter"
+
+--- a/api/models/dataset.py
++++ b/api/models/dataset.py
+@@ class DocumentAsyncTask(TypeBase):
+     attempt_count: Mapped[int] = mapped_column(sa.Integer, nullable=False, server_default=sa.text("0"), default=0)
+     last_error: Mapped[str | None] = mapped_column(LongText, nullable=True, default=None)
++    last_error_code: Mapped[str | None] = mapped_column(String(255), nullable=True, default=None)
++    next_attempt_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True, default=None)
+     processing_started_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True, default=None)
+     completed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True, default=None)
+
+# ---------------------------------------------------------------------------
+# 校验要点
+# ---------------------------------------------------------------------------
+# 1. `String` / `DateTime` / `datetime` 在 models/dataset.py 顶部均已导入（trace_id
+#    用 String(128)、processing_started_at 用 DateTime），无需新增 import。
+# 2. 不要新增 status 索引：models/dataset.py:616 已有
+#    Index("document_async_task_status_idx", "status", "created_at")，
+#    再加一个 (status, created_at) 属于重复索引。
+# 3. EnumText 的 length 在 models/dataset.py:629 声明为 32，"dead_letter" 占 11 字符，
+#    models/types.py:190 的 __init__ 会断言 length >= max(len(value))，安全。

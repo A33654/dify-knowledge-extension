@@ -1,0 +1,94 @@
+import type { ExternalTraceRun } from './external-trace-row'
+import type {
+  AgentLogItemWithChildren,
+  IterationDurationMap,
+  LoopDurationMap,
+  LoopVariableMap,
+  NodeTracing,
+} from '@/types/workflow'
+import AgentResultPanel from './agent-log/agent-result-panel'
+import { IterationResultPanel } from './iteration-log'
+import { LoopResultPanel } from './loop-log'
+import { RetryResultPanel } from './retry-log'
+
+export type SpecialResultPanelProps = {
+  showRetryDetail?: boolean
+  setShowRetryDetailFalse?: () => void
+  retryResultList?: NodeTracing[]
+
+  showIteratingDetail?: boolean
+  setShowIteratingDetailFalse?: () => void
+  iterationResultList?: NodeTracing[][]
+  iterationResultDurationMap?: IterationDurationMap
+
+  showLoopingDetail?: boolean
+  setShowLoopingDetailFalse?: () => void
+  loopResultList?: NodeTracing[][]
+  loopResultDurationMap?: LoopDurationMap
+  loopResultVariableMap?: LoopVariableMap
+
+  agentOrToolLogItemStack?: AgentLogItemWithChildren[]
+  agentOrToolLogListMap?: Record<string, AgentLogItemWithChildren[]>
+  handleShowAgentOrToolLog?: (detail?: AgentLogItemWithChildren) => void
+  externalTraceRun?: ExternalTraceRun
+}
+const SpecialResultPanel = ({
+  showRetryDetail,
+  setShowRetryDetailFalse,
+  retryResultList,
+
+  showIteratingDetail,
+  setShowIteratingDetailFalse,
+  iterationResultList,
+  iterationResultDurationMap,
+
+  showLoopingDetail,
+  setShowLoopingDetailFalse,
+  loopResultList,
+  loopResultDurationMap,
+  loopResultVariableMap,
+
+  agentOrToolLogItemStack,
+  agentOrToolLogListMap,
+  handleShowAgentOrToolLog,
+  externalTraceRun,
+}: SpecialResultPanelProps) => {
+  return (
+    <div
+      onClick={(e) => {
+        e.stopPropagation()
+        e.nativeEvent.stopImmediatePropagation()
+      }}
+    >
+      {!!showRetryDetail && !!retryResultList?.length && setShowRetryDetailFalse && (
+        <RetryResultPanel list={retryResultList} onBack={setShowRetryDetailFalse} />
+      )}
+      {showIteratingDetail && !!iterationResultList?.length && setShowIteratingDetailFalse && (
+        <IterationResultPanel
+          list={iterationResultList}
+          onBack={setShowIteratingDetailFalse}
+          iterDurationMap={iterationResultDurationMap}
+          externalTraceRun={externalTraceRun}
+        />
+      )}
+      {showLoopingDetail && !!loopResultList?.length && setShowLoopingDetailFalse && (
+        <LoopResultPanel
+          list={loopResultList}
+          onBack={setShowLoopingDetailFalse}
+          loopDurationMap={loopResultDurationMap}
+          loopVariableMap={loopResultVariableMap}
+          externalTraceRun={externalTraceRun}
+        />
+      )}
+      {!!agentOrToolLogItemStack?.length && agentOrToolLogListMap && handleShowAgentOrToolLog && (
+        <AgentResultPanel
+          agentOrToolLogItemStack={agentOrToolLogItemStack}
+          agentOrToolLogListMap={agentOrToolLogListMap}
+          onShowAgentOrToolLog={handleShowAgentOrToolLog}
+        />
+      )}
+    </div>
+  )
+}
+
+export default SpecialResultPanel

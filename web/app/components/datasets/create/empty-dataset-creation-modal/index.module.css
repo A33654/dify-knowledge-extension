@@ -1,0 +1,8 @@
+@reference "../../../../styles/globals.css";
+
+.label {
+  @apply text-text-primary;
+  font-weight: 500;
+  font-size: 14px;
+  line-height: 20px;
+}

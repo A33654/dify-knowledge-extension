@@ -1,0 +1,117 @@
+import type { MetadataShape } from '@/app/components/workflow/nodes/knowledge-retrieval/types'
+import { Infotip, InfotipContent, InfotipTrigger } from '@langgenius/dify-ui/infotip'
+import { noop } from 'es-toolkit/function'
+import { useCallback, useId, useState } from 'react'
+import { useTranslation } from 'react-i18next'
+import ModelParameterModal from '@/app/components/header/account-setting/model-provider-page/model-parameter-modal'
+import {
+  Collapse,
+  CollapseActions,
+  CollapseContent,
+  CollapseHeader,
+  CollapseIndicator,
+  CollapseTitle,
+  CollapseTrigger,
+} from '@/app/components/workflow/nodes/_base/components/collapse'
+import { MetadataFilteringModeEnum } from '@/app/components/workflow/nodes/knowledge-retrieval/types'
+import MetadataTrigger from '../metadata-trigger'
+import MetadataFilterSelector from './metadata-filter-selector'
+
+type MetadataFilterProps = {
+  allowedModes?: readonly MetadataFilteringModeEnum[]
+  metadataFilterMode?: MetadataFilteringModeEnum
+  handleMetadataFilterModeChange: (mode: MetadataFilteringModeEnum) => void
+} & MetadataShape
+
+const MetadataFilter = ({
+  allowedModes,
+  metadataFilterMode = MetadataFilteringModeEnum.disabled,
+  handleMetadataFilterModeChange,
+  metadataModelConfig,
+  handleMetadataModelChange,
+  handleMetadataCompletionParamsChange,
+  ...restProps
+}: MetadataFilterProps) => {
+  const titleId = useId()
+
+  const { t } = useTranslation(['workflowModels'])
+  const [collapsed, setCollapsed] = useState(true)
+
+  const handleMetadataFilterModeChangeWrapped = useCallback(
+    (mode: MetadataFilteringModeEnum) => {
+      if (mode === MetadataFilteringModeEnum.automatic) setCollapsed(false)
+
+      handleMetadataFilterModeChange(mode)
+    },
+    [handleMetadataFilterModeChange],
+  )
+
+  return (
+    <Collapse
+      disabled={
+        metadataFilterMode === MetadataFilteringModeEnum.disabled ||
+        metadataFilterMode === MetadataFilteringModeEnum.manual
+      }
+      collapsed={collapsed}
+      onCollapse={setCollapsed}
+    >
+      <CollapseHeader>
+        <CollapseTrigger>
+          <CollapseTitle>
+            <span id={titleId}>
+              {t(($) => $['nodes.knowledgeRetrieval.metadata.title'], { ns: 'workflowModels' })}
+            </span>
+          </CollapseTitle>
+          {metadataFilterMode === MetadataFilteringModeEnum.automatic && <CollapseIndicator />}
+        </CollapseTrigger>
+        <Infotip>
+          <InfotipTrigger aria-labelledby={titleId} />
+          <InfotipContent aria-labelledby={titleId} className="w-50">
+            {t(($) => $['nodes.knowledgeRetrieval.metadata.tip'], { ns: 'workflowModels' })}
+          </InfotipContent>
+        </Infotip>
+        <CollapseActions>
+          <div className="flex items-center pr-4">
+            <MetadataFilterSelector
+              allowedModes={allowedModes}
+              value={metadataFilterMode}
+              onSelect={handleMetadataFilterModeChangeWrapped}
+            />
+            {metadataFilterMode === MetadataFilteringModeEnum.manual && (
+              <div className="ml-1">
+                <MetadataTrigger {...restProps} />
+              </div>
+            )}
+          </div>
+        </CollapseActions>
+      </CollapseHeader>
+      <CollapseContent>
+        {metadataFilterMode === MetadataFilteringModeEnum.automatic && (
+          <>
+            <div className="px-4 body-xs-regular text-text-tertiary">
+              {t(($) => $['nodes.knowledgeRetrieval.metadata.options.automatic.desc'], {
+                ns: 'workflowModels',
+              })}
+            </div>
+            <div className="mt-1 px-4">
+              <ModelParameterModal
+                popupClassName="w-[387px]!"
+                isInWorkflow
+                isAdvancedMode={true}
+                provider={metadataModelConfig?.provider || ''}
+                completionParams={metadataModelConfig?.completion_params || { temperature: 0.7 }}
+                modelId={metadataModelConfig?.name || ''}
+                setModel={handleMetadataModelChange || noop}
+                onCompletionParamsChange={handleMetadataCompletionParamsChange || noop}
+                hideDebugWithMultipleModel
+                debugWithMultipleModel={false}
+              />
+            </div>
+          </>
+        )}
+      </CollapseContent>
+    </Collapse>
+  )
+}
+
+export default MetadataFilter

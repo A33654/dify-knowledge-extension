@@ -1,0 +1,49 @@
+import { cn } from '@langgenius/dify-ui/cn'
+import { Infotip, InfotipContent, InfotipTrigger } from '@langgenius/dify-ui/infotip'
+import { useId } from 'react'
+import { useTranslation } from 'react-i18next'
+
+export type LabelProps = {
+  htmlFor: string
+  label: string
+  isRequired?: boolean
+  showOptional?: boolean
+  tooltip?: string
+  className?: string
+}
+
+const Label = ({ htmlFor, label, isRequired, showOptional, tooltip, className }: LabelProps) => {
+  const labelId = useId()
+
+  const { t } = useTranslation(['common'])
+
+  return (
+    <div className="flex h-6 items-center">
+      <label
+        id={labelId}
+        htmlFor={htmlFor}
+        className={cn('system-sm-medium text-text-secondary', className)}
+      >
+        {label}
+      </label>
+      {!isRequired && showOptional && (
+        <div className="ml-1 system-xs-regular text-text-tertiary">
+          {t(($) => $['label.optional'], { ns: 'common' })}
+        </div>
+      )}
+      {isRequired && (
+        <div className="ml-1 system-xs-regular text-text-destructive-secondary">*</div>
+      )}
+      {tooltip && (
+        <Infotip>
+          <InfotipTrigger aria-labelledby={labelId} className="ml-0.5" />
+          <InfotipContent aria-labelledby={labelId} className="w-50">
+            {tooltip}
+          </InfotipContent>
+        </Infotip>
+      )}
+    </div>
+  )
+}
+
+export default Label

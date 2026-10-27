@@ -1,0 +1,192 @@
+# 交付物 3：tasks/document_async_task.py 变更
+# 目标文件：api/tasks/document_async_task.py
+# 覆盖：退避参数、三层 try 捕获 Broker 异常、attempt_count 计数修复、死信流转
+
+--- a/api/tasks/document_async_task.py
++++ b/api/tasks/document_async_task.py
+@@
+ import logging
+ import time
++from datetime import timedelta
+
+ import click
++import click
+ from celery import shared_task
++from celery.exceptions import Retry
+ from sqlalchemy import select
+ from sqlalchemy.orm import Session
+@@
+ logger = logging.getLogger(__name__)
+
+ MAX_RETRIES = 3
+-RETRY_DELAY_SECONDS = 30
++# Exponential backoff: 2s, 4s, 8s for retries 0, 1, 2.
++RETRY_DELAY_SECONDS = 2
+ # Long enough for a large document to be split and embedded without another
+ # worker rediscovering the same task.
+ UPLOAD_LOCK_TIMEOUT = 3600
++# Consumed by the opt-in FlaskTask hook in extensions/ext_celery.py; it is popped
++# from the task kwargs before `run()` so this task's signature stays unchanged.
++TASK_EXECUTION_ID_KEY = "task_execution_id"
+
+
+ @shared_task(queue="dataset", bind=True, max_retries=MAX_RETRIES, default_retry_delay=RETRY_DELAY_SECONDS)
+ def document_async_task(self, task_id: str) -> None:
+@@
+     start_at = time.perf_counter()
+     try:
+         outcome = _process(task_id)
+     except Exception as exc:
+         if self.request.retries >= MAX_RETRIES:
+             logger.exception("Document async upload retry budget exhausted, task_id=%s", task_id)
+-            _mark_failed(task_id, exc)
++            _mark_dead_letter(task_id, exc)
+             raise
+-        _record_attempt_failure(task_id, exc)
++        countdown = RETRY_DELAY_SECONDS * (2**self.request.retries)
++        _record_attempt_failure(task_id, exc, next_attempt_at=naive_utc_now() + timedelta(seconds=countdown))
+         logger.warning(
+             "Document async upload failed, scheduling retry %d/%d, task_id=%s",
+             self.request.retries + 1,
+             MAX_RETRIES,
+             task_id,
+             exc_info=True,
+         )
+-        raise self.retry(
+-            exc=exc,
+-            args=(),
+-            kwargs={"task_id": task_id},
+-            countdown=RETRY_DELAY_SECONDS * (2**self.request.retries),
+-        ) from exc
++        # `self.retry()` publishes the retry message and then raises `Retry`. When
++        # the broker is unavailable the publish error escapes instead, and the
++        # task would end silently without ever reaching `on_failure`. The
++        # terminal dead-letter write therefore happens here, mirroring
++        # tasks/ops_trace_task.py:132-142.
++        try:
++            raise self.retry(
++                exc=exc,
++                args=(),
++                kwargs={"task_id": task_id, TASK_EXECUTION_ID_KEY: task_id},
++                countdown=countdown,
++            ) from exc
++        except Retry:
++            raise
++        except Exception:
++            logger.exception("Failed to schedule document async upload retry, task_id=%s", task_id)
++            _mark_dead_letter(task_id, exc)
++            raise
+@@ def _process(task_id: str) -> str:
+             task = DocumentAsyncTaskService.get_by_id(session, task_id)
+             if task is None:
+                 logger.warning("Document async upload task not found before processing: %s", task_id)
+                 return "missing"
+-            if task.status == DocumentAsyncTaskStatus.SUCCESS:
+-                return "already_succeeded"
+-            if task.status == DocumentAsyncTaskStatus.PROCESSING:
+-                # A previous attempt already claimed the row. Re-entering would
+-                # resolve another version and dispatch duplicate indexing tasks.
+-                return "already_processing"
+-
+-            task.status = DocumentAsyncTaskStatus.PROCESSING
++            # Every attempt that reaches the worker is counted, including the two
++            # short-circuit replays below. Manual retries re-enter this path, so
++            # skipping the increment here would silently drift `attempt_count`.
+             task.attempt_count = (task.attempt_count or 0) + 1
+-            task.processing_started_at = naive_utc_now()
+-            task.last_error = None
+             session.add(task)
+             session.commit()
++            if task.status == DocumentAsyncTaskStatus.SUCCESS:
++                return "already_succeeded"
++            if task.status == DocumentAsyncTaskStatus.PROCESSING:
++                # A previous attempt already claimed the row. Re-entering would
++                # resolve another version and dispatch duplicate indexing tasks.
++                return "already_processing"
++
++            task.status = DocumentAsyncTaskStatus.PROCESSING
++            task.processing_started_at = naive_utc_now()
++            task.last_error = None
++            task.last_error_code = None
++            task.next_attempt_at = None
++            session.add(task)
++            session.commit()
+@@ def _mark_success(task_id: str, *, document_id: str | None = None) -> None:
+         task.status = DocumentAsyncTaskStatus.SUCCESS
+         task.completed_at = naive_utc_now()
+         task.last_error = None
++        task.last_error_code = None
++        task.next_attempt_at = None
+         if document_id is not None:
+             task.document_id = document_id
+@@
+-def _record_attempt_failure(task_id: str, error: Exception) -> None:
++def _record_attempt_failure(task_id: str, error: Exception, *, next_attempt_at: datetime | None = None) -> None:
+     with session_factory.create_session() as session:
+         task = DocumentAsyncTaskService.get_by_id(session, task_id)
+         if task is None:
+             return
+         task.status = DocumentAsyncTaskStatus.FAILED
+         task.last_error = str(error)
++        task.last_error_code = _error_code(error)
++        task.next_attempt_at = next_attempt_at
+         session.add(task)
+         session.commit()
+
+
+-def _mark_failed(task_id: str, error: Exception) -> None:
+-    _record_attempt_failure(task_id, error)
++def _mark_dead_letter(task_id: str, error: Exception) -> None:
+     with session_factory.create_session() as session:
+         task = DocumentAsyncTaskService.get_by_id(session, task_id)
+         if task is None or task.document_id is None:
+-            return
++            _write_dead_letter(session, task, error)
++            return
++        document_id = task.document_id
++        _write_dead_letter(session, task, error)
++    with session_factory.create_session() as session:
+         _mark_document_error(session, document_id, str(error))
+
+
++def _write_dead_letter(session: Session, task: DocumentAsyncTask | None, error: Exception) -> None:
++    if task is None:
++        return
++    task.status = DocumentAsyncTaskStatus.DEAD_LETTER
++    task.last_error = str(error)
++    task.last_error_code = _error_code(error)
++    task.next_attempt_at = None
++    task.completed_at = naive_utc_now()
++    session.add(task)
++    session.commit()
++
++
++def _error_code(error: Exception) -> str:
++    """Return a low-cardinality code for alerting and client-side branching."""
++    code = getattr(error, "error_code", None)
++    if isinstance(code, str) and code:
++        return code[:255]
++    return type(error).__name__[:255]
++
++
+ def _mark_document_error(session: Session, document_id: str, error: str) -> None:
+
+# ---------------------------------------------------------------------------
+# 需要的 import 补充（若上方 diff 的 hunk 未覆盖）
+# ---------------------------------------------------------------------------
+#   from celery.exceptions import Retry
+#   from datetime import timedelta
+#   from models.dataset import Document, DocumentAsyncTask      # DocumentAsyncTask 新增
+#   from models.enums import DocumentAsyncTaskStatus            # 已存在
+#   naive_utc_now / datetime 已在文件内可用（naive_utc_now 已导入；datetime 需确认）
+#
+# 注意：`datetime` 仅在 _record_attempt_failure 的类型注解里用到，若文件未导入需补
+#   from datetime import datetime, timedelta
+# ---------------------------------------------------------------------------
+# 行为变化清单（需评审确认）
+# ---------------------------------------------------------------------------
+# 1. 重试间隔 30/60/120s -> 2/4/8s（仅改常量，公式 RETRY_DELAY_SECONDS * 2**retries 不动）
+# 2. 预算耗尽的状态从 failed 改为 dead_letter，并写 completed_at
+# 3. Broker 不可用导致 self.retry() 失败 -> 落 dead_letter（原先会静默丢失）
+# 4. already_succeeded / already_processing 短路分支现在也会 attempt_count + 1
+# 5. self.retry 的 kwargs 带上 task_execution_id，保证重试链路继续走埋点

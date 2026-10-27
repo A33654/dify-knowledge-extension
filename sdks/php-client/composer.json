@@ -1,0 +1,9 @@
+{
+    "require": {
+        "php": ">=7.2",
+        "guzzlehttp/guzzle": "^7.15.2"
+    },
+    "autoload": {
+        "files": ["dify-client.php"]
+    }
+}

@@ -1,0 +1,196 @@
+import type { Var } from '../../types'
+import type { Authorization, Body, HttpNodeType, Method, Timeout } from './types'
+import { produce } from 'immer'
+import { useCallback, useEffect, useState } from 'react'
+import useNodeCrud from '@/app/components/workflow/nodes/_base/hooks/use-node-crud'
+import { useNodesReadOnly } from '../../hooks/use-workflow'
+import { useStore } from '../../store'
+import { VarType } from '../../types'
+import useVarList from '../_base/hooks/use-var-list'
+import useKeyValueList from './hooks/use-key-value-list'
+import { BodyType } from './types'
+import { transformToBodyPayload } from './utils'
+
+const keyValueBodyTypes: readonly BodyType[] = [BodyType.formData, BodyType.xWwwFormUrlencoded]
+
+// Stored and imported bodies may still carry the legacy string form of their data.
+const normalizeBody = (body: Body): Body => {
+  if (typeof body.data === 'string') {
+    return {
+      ...body,
+      data: transformToBodyPayload(body.data, keyValueBodyTypes.includes(body.type)),
+    }
+  }
+  return body.data ? body : { ...body, data: [] }
+}
+
+const useConfig = (id: string, payload: HttpNodeType) => {
+  const { nodesReadOnly: readOnly } = useNodesReadOnly()
+
+  const defaultConfig = useStore((s) => s.nodesDefaultConfigs?.[payload.type])
+
+  const { inputs, setInputs } = useNodeCrud<HttpNodeType>(id, payload)
+
+  const { handleVarListChange, handleAddVariable } = useVarList<HttpNodeType>({
+    inputs,
+    setInputs,
+  })
+
+  const [isDataReady, setIsDataReady] = useState(false)
+
+  useEffect(() => {
+    const isReady = defaultConfig && Object.keys(defaultConfig).length > 0
+    if (isReady) {
+      const newInputs = {
+        ...defaultConfig,
+        ...inputs,
+      }
+      newInputs.body = normalizeBody(newInputs.body)
+
+      setInputs(newInputs)
+      setIsDataReady(true)
+    }
+  }, [defaultConfig])
+
+  const handleMethodChange = useCallback(
+    (method: Method) => {
+      const newInputs = produce(inputs, (draft: HttpNodeType) => {
+        draft.method = method
+      })
+      setInputs(newInputs)
+    },
+    [inputs, setInputs],
+  )
+
+  const handleUrlChange = useCallback(
+    (url: string) => {
+      const newInputs = produce(inputs, (draft: HttpNodeType) => {
+        draft.url = url
+      })
+      setInputs(newInputs)
+    },
+    [inputs, setInputs],
+  )
+
+  const handleFieldChange = useCallback(
+    (field: string) => {
+      return (value: string) => {
+        const newInputs = produce(inputs, (draft: HttpNodeType) => {
+          ;(draft as any)[field] = value
+        })
+        setInputs(newInputs)
+      }
+    },
+    [inputs, setInputs],
+  )
+
+  const {
+    list: headers,
+    setList: setHeaders,
+    addItem: addHeader,
+    isKeyValueEdit: isHeaderKeyValueEdit,
+    toggleIsKeyValueEdit: toggleIsHeaderKeyValueEdit,
+  } = useKeyValueList(inputs.headers, handleFieldChange('headers'))
+
+  const {
+    list: params,
+    setList: setParams,
+    addItem: addParam,
+    isKeyValueEdit: isParamKeyValueEdit,
+    toggleIsKeyValueEdit: toggleIsParamKeyValueEdit,
+  } = useKeyValueList(inputs.params, handleFieldChange('params'))
+
+  const setBody = useCallback(
+    (data: Body) => {
+      const newInputs = produce(inputs, (draft: HttpNodeType) => {
+        draft.body = data
+      })
+      setInputs(newInputs)
+    },
+    [inputs, setInputs],
+  )
+
+  const setAuthorization = useCallback(
+    (authorization: Authorization) => {
+      const newInputs = produce(inputs, (draft: HttpNodeType) => {
+        draft.authorization = authorization
+      })
+      setInputs(newInputs)
+    },
+    [inputs, setInputs],
+  )
+
+  const setTimeout = useCallback(
+    (timeout: Timeout) => {
+      const newInputs = produce(inputs, (draft: HttpNodeType) => {
+        draft.timeout = timeout
+      })
+      setInputs(newInputs)
+    },
+    [inputs, setInputs],
+  )
+
+  const filterVar = useCallback((varPayload: Var) => {
+    const textVariableTypes: readonly VarType[] = [VarType.string, VarType.number, VarType.secret]
+
+    return textVariableTypes.includes(varPayload.type)
+  }, [])
+
+  const handleCurlImport = useCallback(
+    (newNode: HttpNodeType) => {
+      const newInputs = produce(inputs, (draft: HttpNodeType) => {
+        draft.method = newNode.method
+        draft.url = newNode.url
+        draft.headers = newNode.headers
+        draft.params = newNode.params
+        draft.body = normalizeBody(newNode.body)
+      })
+      setInputs(newInputs)
+    },
+    [inputs, setInputs],
+  )
+
+  const handleSSLVerifyChange = useCallback(
+    (checked: boolean) => {
+      const newInputs = produce(inputs, (draft: HttpNodeType) => {
+        draft.ssl_verify = checked
+      })
+      setInputs(newInputs)
+    },
+    [inputs, setInputs],
+  )
+
+  return {
+    readOnly,
+    isDataReady,
+    inputs,
+    handleVarListChange,
+    handleAddVariable,
+    filterVar,
+    handleMethodChange,
+    handleUrlChange,
+    // headers
+    headers,
+    setHeaders,
+    addHeader,
+    isHeaderKeyValueEdit,
+    toggleIsHeaderKeyValueEdit,
+    // params
+    params,
+    setParams,
+    addParam,
+    isParamKeyValueEdit,
+    toggleIsParamKeyValueEdit,
+    // body
+    setBody,
+    // ssl verify
+    handleSSLVerifyChange,
+    // authorization
+    setAuthorization,
+    setTimeout,
+    // curl import
+    handleCurlImport,
+  }
+}
+
+export default useConfig

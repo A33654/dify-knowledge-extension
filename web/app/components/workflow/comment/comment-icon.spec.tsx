@@ -1,0 +1,196 @@
+import type { WorkflowCommentBasic } from '@dify/contracts/api/console/apps/types.gen'
+import type { ReactElement } from 'react'
+import { fireEvent, screen } from '@testing-library/react'
+import userEvent from '@testing-library/user-event'
+import { useState } from 'react'
+import { beforeEach, describe, expect, it, vi } from 'vite-plus/test'
+import { renderWorkflowComponent } from '@/app/components/workflow/__tests__/workflow-test-env'
+import { createConsoleQueryWrapper } from '@/test/console/query-data'
+import { CommentIcon } from './comment-icon'
+
+type Position = { x: number; y: number }
+
+let mockUserId = 'user-1'
+const mockConsoleState = vi.hoisted(() => ({
+  userProfile: {
+    id: 'user-1',
+    name: 'User',
+    avatar_url: 'avatar',
+  },
+}))
+
+const mockFlowToScreenPosition = vi.fn((position: Position) => position)
+const mockScreenToFlowPosition = vi.fn((position: Position) => position)
+
+const render = (ui: ReactElement) => {
+  const { queryClient } = createConsoleQueryWrapper({
+    accountProfile: { ...mockConsoleState.userProfile, id: mockUserId },
+  })
+  return renderWorkflowComponent(ui, { queryClient })
+}
+
+vi.mock('reactflow', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('reactflow')>()),
+  useReactFlow: () => ({
+    flowToScreenPosition: mockFlowToScreenPosition,
+    screenToFlowPosition: mockScreenToFlowPosition,
+  }),
+  useViewport: () => ({
+    x: 0,
+    y: 0,
+    zoom: 1,
+  }),
+}))
+
+const createComment = (overrides: Partial<WorkflowCommentBasic> = {}): WorkflowCommentBasic => ({
+  id: 'comment-1',
+  position_x: 0,
+  position_y: 0,
+  content: 'Hello',
+  created_by: 'user-1',
+  created_by_account: {
+    id: 'user-1',
+    name: 'Alice',
+    email: 'alice@example.com',
+    avatar_url: null,
+  },
+  created_at: 1,
+  updated_at: 2,
+  resolved: false,
+  mention_count: 0,
+  reply_count: 0,
+  participants: [],
+  ...overrides,
+})
+
+describe('CommentIcon', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    mockUserId = 'user-1'
+  })
+
+  it('opens with the keyboard and moves an authored comment in canvas coordinates', async () => {
+    const user = userEvent.setup()
+    const onClick = vi.fn()
+    const onPositionUpdate = vi.fn()
+    function Comment() {
+      const [comment, setComment] = useState(() => createComment())
+      return (
+        <CommentIcon
+          comment={comment}
+          onClick={onClick}
+          onPositionUpdate={(position) => {
+            onPositionUpdate(position)
+            setComment((current) => ({
+              ...current,
+              position_x: position.x,
+              position_y: position.y,
+            }))
+          }}
+        />
+      )
+    }
+    render(<Comment />)
+    await user.tab()
+    const marker = screen.getByRole('button', { name: /workflow.keyboard.openComment/ })
+    expect(marker).toHaveFocus()
+    await user.keyboard('{Enter}')
+    expect(onClick).toHaveBeenCalledTimes(1)
+    await user.keyboard('{ArrowRight}{Shift>}{ArrowDown}{/Shift}')
+    expect(onPositionUpdate).toHaveBeenLastCalledWith({ x: 5, y: 20 })
+    expect(marker).toHaveFocus()
+    onPositionUpdate.mockClear()
+    await user.keyboard('{ArrowRight>3}')
+    expect(onPositionUpdate).not.toHaveBeenCalled()
+    await user.keyboard('{/ArrowRight}')
+    expect(onPositionUpdate).toHaveBeenCalledExactlyOnceWith({ x: 20, y: 20 })
+  })
+
+  it("allows opening another author's comment but does not move it with arrow keys", async () => {
+    const user = userEvent.setup()
+    mockUserId = 'user-2'
+    const onClick = vi.fn()
+    const onPositionUpdate = vi.fn()
+    render(
+      <CommentIcon
+        comment={createComment()}
+        onClick={onClick}
+        onPositionUpdate={onPositionUpdate}
+      />,
+    )
+    await user.tab()
+    await user.keyboard('{ArrowRight}{Enter}')
+    expect(onPositionUpdate).not.toHaveBeenCalled()
+    expect(onClick).toHaveBeenCalledTimes(1)
+  })
+
+  it('toggles preview on hover when inactive', () => {
+    const comment = createComment()
+    const { container } = render(
+      <CommentIcon comment={comment} onClick={vi.fn()} isActive={false} />,
+    )
+    const marker = container.querySelector('[data-role="comment-marker"]') as HTMLElement
+    const hoverTarget = marker.firstElementChild as HTMLElement
+
+    fireEvent.mouseEnter(hoverTarget)
+    expect(screen.getByText('Hello')).toBeInTheDocument()
+
+    fireEvent.mouseLeave(hoverTarget)
+    expect(screen.queryByText('Hello')).not.toBeInTheDocument()
+  })
+
+  it('calls onPositionUpdate after dragging by author', () => {
+    const comment = createComment({ position_x: 0, position_y: 0 })
+    const onClick = vi.fn()
+    const onPositionUpdate = vi.fn()
+    const { container } = render(
+      <CommentIcon comment={comment} onClick={onClick} onPositionUpdate={onPositionUpdate} />,
+    )
+    const marker = container.querySelector('[data-role="comment-marker"]') as HTMLElement
+
+    fireEvent.pointerDown(marker, {
+      pointerId: 1,
+      button: 0,
+      clientX: 100,
+      clientY: 100,
+    })
+    fireEvent.pointerMove(marker, {
+      pointerId: 1,
+      clientX: 110,
+      clientY: 110,
+    })
+    fireEvent.pointerUp(marker, {
+      pointerId: 1,
+      clientX: 110,
+      clientY: 110,
+    })
+
+    expect(mockScreenToFlowPosition).toHaveBeenCalledWith({ x: 10, y: 10 })
+    expect(onPositionUpdate).toHaveBeenCalledWith({ x: 10, y: 10 })
+    expect(onClick).not.toHaveBeenCalled()
+  })
+
+  it('calls onClick for non-author clicks', () => {
+    mockUserId = 'user-2'
+    const comment = createComment()
+    const onClick = vi.fn()
+    const { container } = render(
+      <CommentIcon comment={comment} onClick={onClick} isActive={false} />,
+    )
+    const marker = container.querySelector('[data-role="comment-marker"]') as HTMLElement
+
+    fireEvent.pointerDown(marker, {
+      pointerId: 1,
+      button: 0,
+      clientX: 50,
+      clientY: 60,
+    })
+    fireEvent.pointerUp(marker, {
+      pointerId: 1,
+      clientX: 50,
+      clientY: 60,
+    })
+
+    expect(onClick).toHaveBeenCalledTimes(1)
+  })
+})

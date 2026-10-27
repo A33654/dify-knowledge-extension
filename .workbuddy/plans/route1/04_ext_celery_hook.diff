@@ -1,0 +1,147 @@
+# 交付物 5：FlaskTask 薄 opt-in 埋点钩子
+# 目标文件：
+#   api/extensions/ext_celery.py                          （钩子本体）
+#   api/services/knowledge/document_async_task_service.py （埋点落库方法）
+
+--- a/api/extensions/ext_celery.py
++++ b/api/extensions/ext_celery.py
+@@
+ logger = logging.getLogger(__name__)
+
++# Opt-in key: a task is only instrumented when it is dispatched with this kwarg.
++# It is stripped before `run()` so task signatures stay untouched, and so the 78
++# existing tasks (20 of which already declare their own `max_retries`) keep their
++# exact current behaviour.
++_TASK_EXECUTION_ID_KEY = "task_execution_id"
++
+@@ def init_app(app: DifyApp) -> Celery:
+     class FlaskTask(Task):
+         def __call__(self, *args: object, **kwargs: object) -> object:
+             from core.logging.context import init_request_context
+
+             with app.app_context():
+                 # Initialize logging context for this task (similar to before_request in Flask)
+                 init_request_context()
+-                return self.run(*args, **kwargs)
++                task_execution_id = kwargs.get(_TASK_EXECUTION_ID_KEY)
++                if not isinstance(task_execution_id, str) or not task_execution_id:
++                    return self.run(*args, **kwargs)
++                tracked_kwargs = {key: value for key, value in kwargs.items() if key != _TASK_EXECUTION_ID_KEY}
++                return _run_with_execution_tracking(self, task_execution_id, args, tracked_kwargs)
++
++    def _run_with_execution_tracking(
++        task: Task,
++        task_execution_id: str,
++        args: tuple[object, ...],
++        kwargs: dict[str, object],
++    ) -> object:
++        """Instrumentation-only wrapper for opt-in tasks.
+
++        It never retries, never calls ``self.retry()`` and never swallows: the
++        business task keeps full ownership of retry and dead-letter decisions
++        (see tasks/document_async_task.py). Every write is isolated so a
++        telemetry failure can never change the task outcome.
++        """
++        from services.knowledge.document_async_task_service import DocumentAsyncTaskService
+
++        try:
++            DocumentAsyncTaskService.mark_execution_started(task_execution_id)
++        except Exception:
++            logger.exception("Failed to record async task start, task_execution_id=%s", task_execution_id)
+
++        try:
++            result = task.run(*args, **kwargs)
++        except Exception as exc:
++            try:
++                DocumentAsyncTaskService.record_execution_failure(task_execution_id, exc)
++            except Exception:
++                logger.exception("Failed to record async task failure, task_execution_id=%s", task_execution_id)
++            raise
+
++        try:
++            DocumentAsyncTaskService.mark_execution_succeeded(task_execution_id)
++        except Exception:
++            logger.exception("Failed to record async task success, task_execution_id=%s", task_execution_id)
++        return result
+
+--- a/api/services/knowledge/document_async_task_service.py
++++ b/api/services/knowledge/document_async_task_service.py
+@@
+ from core.helper.trace_id_helper import is_valid_trace_id
++from core.db.session_factory import session_factory
+ from libs.datetime_utils import naive_utc_now
+@@ ASYNC_UPLOAD_DATA_SOURCE_TYPE = DataSourceType.UPLOAD_FILE
++
++
++def error_code_for(error: Exception) -> str:
++    """Return a low-cardinality code for alerting and client-side branching."""
++    code = getattr(error, "error_code", None)
++    if isinstance(code, str) and code:
++        return code[:255]
++    return type(error).__name__[:255]
+@@ class DocumentAsyncTaskService:
+     @staticmethod
+     def attach_document(session: Session, *, task: DocumentAsyncTask, document: Document) -> None:
+         task.document_id = document.id
+         task.batch = document.batch
+         task.updated_at = naive_utc_now()
+         session.add(task)
++
++    # ------------------------------------------------------------------
++    # Opt-in FlaskTask instrumentation. All three are safety nets: they only
++    # write while the row is still owned by the worker, so a task that already
++    # recorded its own outcome (success / failed / dead_letter) always wins.
++    # ------------------------------------------------------------------
++
++    @staticmethod
++    def mark_execution_started(task_id: str) -> None:
++        """Fill `processing_started_at` once; replays never rewrite the original."""
++        with session_factory.create_session() as session:
++            task = DocumentAsyncTaskService.get_by_id(session, task_id)
++            if task is None or task.processing_started_at is not None:
++                return
++            task.processing_started_at = naive_utc_now()
++            session.add(task)
++            session.commit()
++
++    @staticmethod
++    def record_execution_failure(task_id: str, error: Exception) -> None:
++        """Catch failures that escape before the task records them itself."""
++        with session_factory.create_session() as session:
++            task = DocumentAsyncTaskService.get_by_id(session, task_id)
++            if task is None or task.status != DocumentAsyncTaskStatus.PROCESSING:
++                return
++            task.last_error = str(error)
++            task.last_error_code = error_code_for(error)
++            session.add(task)
++            session.commit()
++
++    @staticmethod
++    def mark_execution_succeeded(task_id: str) -> None:
++        with session_factory.create_session() as session:
++            task = DocumentAsyncTaskService.get_by_id(session, task_id)
++            if task is None or task.status != DocumentAsyncTaskStatus.PROCESSING:
++                return
++            task.status = DocumentAsyncTaskStatus.SUCCESS
++            task.completed_at = naive_utc_now()
++            task.last_error = None
++            task.last_error_code = None
++            task.next_attempt_at = None
++            session.add(task)
++            session.commit()
+
+# ---------------------------------------------------------------------------
+# 关键设计说明
+# ---------------------------------------------------------------------------
+# 1. 不接管重试：钩子完全不调用 self.retry()，所以 on_retry / on_failure 本期不动，
+#    三层 try 捕获 Broker 异常的逻辑留在 tasks/document_async_task.py 内部。
+# 2. 不吞异常：`except Exception: ... raise`，业务异常原样上抛，Celery 照常处理。
+# 3. 埋点不干扰业务：三段写入各自独立 try/except，DB 故障时只记日志。
+# 4. 零侵入：不带 task_execution_id 的任务走原路径 return self.run(...)，
+#    与改造前逐字节等价；不会和 20 个自带 max_retries 的任务产生重试嵌套。
+# 5. task_execution_id 在调用 run 前被剔除，document_async_task(self, task_id)
+#    的签名无需改动；重试时由 self.retry(kwargs={"task_id":..., "task_execution_id":...})
+#    重新带上，保证重试链路继续走埋点。
+# 6. 02_task.diff 里的 _error_code 与此处 error_code_for 重复，建议任务侧直接
+#    `from services.knowledge.document_async_task_service import error_code_for`
+#    并删掉本地 _error_code，避免两处漂移。
